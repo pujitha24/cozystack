@@ -107,6 +107,56 @@ tests:
           value: false
         documentIndex: 3
 
+  ###################################################
+  # Key-bearing Secrets stay invisible to tenants   #
+  ###################################################
+
+  # Both Certificates below mint a private key. The qdrant ResourceDefinition
+  # grants tenants read access to Secrets matching
+  # internal.cozystack.io/tenant-ca, so stamping either label here would hand
+  # the tenant a signing key. Only the controller-authored projection may
+  # carry them.
+  #
+  # Selected by the Secret each Certificate writes rather than by position: a
+  # documentIndex would follow the slot, so reordering this template would let
+  # a labelled key-bearing Certificate slide out from under the assertion and
+  # pass green.
+  - it: the key-bearing CA Secret is never marked tenant-readable
+    release:
+      name: test-qdrant
+      namespace: tenant-test
+    set:
+      tls:
+        enabled: true
+      _cluster:
+        cluster-domain: cozy.local
+    documentSelector:
+      path: spec.secretName
+      value: test-qdrant-ca
+    asserts:
+      - notExists:
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenant-ca"]
+      - notExists:
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenantresource"]
+
+  - it: the key-bearing leaf Secret is never marked tenant-readable
+    release:
+      name: test-qdrant
+      namespace: tenant-test
+    set:
+      tls:
+        enabled: true
+      _cluster:
+        cluster-domain: cozy.local
+    documentSelector:
+      path: spec.secretName
+      value: test-qdrant-tls
+    asserts:
+      - notExists:
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenant-ca"]
+      - notExists:
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenantresource"]
+
   - it: leaf cert has server auth and client auth EKU
     release:
       name: test-qdrant
