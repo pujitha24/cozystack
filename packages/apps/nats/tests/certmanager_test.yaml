@@ -139,32 +139,47 @@ tests:
           value: my-nats-ca
 
   ###################################################
-  # CA Secret carries trust-anchor publish labels   #
+  # Key-bearing Secrets stay invisible to tenants   #
   ###################################################
 
-  - it: CA certificate publishes ca.crt to tenants via secretTemplate labels
+  # Both Certificates below mint a private key: the CA Secret stores the CA key
+  # under tls.key, the leaf Secret the server key. The nats ResourceDefinition
+  # grants tenants read access to Secrets matching
+  # internal.cozystack.io/tenant-ca, so stamping either visibility label here
+  # would hand that key to every tenant subject. Only the controller-authored
+  # projection may carry them.
+  #
+  # Selected by the Secret each Certificate writes rather than by position: a
+  # documentIndex would follow the slot, so reordering this template would let
+  # a labelled key-bearing Certificate slide out from under the assertion and
+  # pass green.
+  - it: the key-bearing CA Secret is never marked tenant-readable
     set:
       tls:
         enabled: true
       external: false
-    documentIndex: 1
-    asserts:
-      - equal:
-          path: spec.secretTemplate.labels["internal.cozystack.io/publish-ca-cert"]
-          value: "true"
-      - equal:
-          path: spec.secretTemplate.labels["internal.cozystack.io/publish-ca-cert-release"]
-          value: my-nats
-
-  - it: leaf certificate does NOT carry publish-ca-cert labels
-    set:
-      tls:
-        enabled: true
-      external: false
-    documentIndex: 3
+    documentSelector:
+      path: spec.secretName
+      value: my-nats-ca
     asserts:
       - notExists:
-          path: spec.secretTemplate.labels["internal.cozystack.io/publish-ca-cert"]
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenant-ca"]
+      - notExists:
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenantresource"]
+
+  - it: the key-bearing leaf Secret is never marked tenant-readable
+    set:
+      tls:
+        enabled: true
+      external: false
+    documentSelector:
+      path: spec.secretName
+      value: my-nats-tls
+    asserts:
+      - notExists:
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenant-ca"]
+      - notExists:
+          path: spec.secretTemplate.labels["internal.cozystack.io/tenantresource"]
 
   ###################################################
   # SAN coverage (internal, tls.enabled=true)       #
