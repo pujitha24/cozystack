@@ -18,16 +18,23 @@ spec:
         - cozystack.kubevirt
         # CDI provisions the boot DataVolume (templates/dv.yaml).
         - cozystack.kubevirt-cdi
-        # vm-default-images creates the cozy-public/vm-default-images-vyos-router PVC
-        # the default SiteRouter boot DataVolume clones (templates/dv.yaml); without
-        # it the clone source is absent and the VM never boots. No cycle:
-        # vm-default-images depends only on networking + kubevirt-cdi.
-        - cozystack.vm-default-images
         # cozystack-engine ships the ApplicationDefinition CRD rendered by the *-rd component below.
         - cozystack.cozystack-engine
         # site-router-controller mediates kube-ovn routing/port-security and pushes
         # VyOS config; installed before SiteRouter instances so they reconcile.
         - cozystack.site-router-controller
+        # NOTE: cozystack.vm-default-images is deliberately NOT a dependsOn. It
+        # provides the cozy-public/vm-default-images-vyos-router PVC the default
+        # SiteRouter boot DataVolume clones (templates/dv.yaml), but it is an opt-in
+        # package (off unless listed in bundles.enabledPackages), so a hard dependsOn
+        # leaves THIS registration Package stuck InProgress forever on any install
+        # that does not enable it — which blocks the whole cozystack-platform
+        # HelmRelease from converging (an install-time timeout). The golden image is
+        # an instance-time prerequisite — a SiteRouter instance will not boot without
+        # it, documented in packages/apps/site-router/docs/image-lifecycle.md — not a
+        # registration-time dependency. kubevirt / kubevirt-cdi stay above because
+        # they are non-optional under the IaaS bundle (the same iaas.enabled gate that
+        # emits this package), so they always resolve.
       libraries:
         - name: cozy-lib
           path: library/cozy-lib

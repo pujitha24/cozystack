@@ -1,0 +1,40 @@
+suite: site-router-application must not hard-depend on the opt-in vm-default-images
+# Regression guard for an install-time hang: the SiteRouter app-registration
+# Package must NOT list cozystack.vm-default-images in dependsOn. That package is
+# opt-in (off unless named in bundles.enabledPackages), so a hard dependsOn leaves
+# this registration Package stuck InProgress forever on any install that does not
+# enable it, which blocks the whole cozystack-platform HelmRelease from converging
+# (a timeout on `Package/cozystack.site-router-application status: 'InProgress'`
+# during E2E install). The golden boot image is an instance-time prerequisite
+# (packages/apps/site-router/docs/image-lifecycle.md), not a registration edge. The
+# edges below are non-optional under the IaaS bundle (the same iaas.enabled gate
+# that emits this package), so they always resolve and must stay.
+templates:
+  - templates/sources.yaml
+release:
+  name: cozystack
+  namespace: cozy-system
+tests:
+  - it: depends on the resolvable IaaS + control-plane edges, never on vm-default-images
+    documentSelector:
+      path: metadata.name
+      value: cozystack.site-router-application
+    asserts:
+      - contains:
+          path: spec.variants[0].dependsOn
+          content: cozystack.networking
+      - contains:
+          path: spec.variants[0].dependsOn
+          content: cozystack.kubevirt
+      - contains:
+          path: spec.variants[0].dependsOn
+          content: cozystack.kubevirt-cdi
+      - contains:
+          path: spec.variants[0].dependsOn
+          content: cozystack.cozystack-engine
+      - contains:
+          path: spec.variants[0].dependsOn
+          content: cozystack.site-router-controller
+      - notContains:
+          path: spec.variants[0].dependsOn
+          content: cozystack.vm-default-images
