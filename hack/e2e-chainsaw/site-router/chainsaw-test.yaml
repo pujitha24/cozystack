@@ -40,9 +40,9 @@ spec:
         kind: VirtualMachineInstance
         name: site-router-a
     - describe:
-        apiVersion: helm.toolkit.fluxcd.io/v2
-        kind: HelmRelease
-        name: vm-instance-remote-site-b
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachine
+        name: remote-site-b
     # The controller mediates routes / port_security and pushes VyOS config; its
     # log is where a stuck reconcile (deny-set reject, PSK/api-key pending, VyOS
     # ConfigureFailed, source-filter pending) surfaces.
@@ -69,23 +69,25 @@ spec:
         - apply:
             file: remote-site-b.yaml
         - assert:
-            # 8m: golden-image clone (CDI) + nested VM cold boot.
+            # 8m: golden-image clone (CDI) + nested VM cold boot. B is a raw
+            # KubeVirt VirtualMachine (not a cozystack HelmRelease projection), so
+            # readiness is asserted on the KubeVirt objects directly.
             timeout: 8m
             resource:
-              apiVersion: helm.toolkit.fluxcd.io/v2
-              kind: HelmRelease
+              apiVersion: cdi.kubevirt.io/v1beta1
+              kind: DataVolume
               metadata:
-                name: vm-disk-remote-site-b
+                name: remote-site-b-boot
               status:
                 (conditions[?type == 'Ready']):
                   - status: "True"
         - assert:
             timeout: 6m
             resource:
-              apiVersion: helm.toolkit.fluxcd.io/v2
-              kind: HelmRelease
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachine
               metadata:
-                name: vm-instance-remote-site-b
+                name: remote-site-b
               status:
                 (conditions[?type == 'Ready']):
                   - status: "True"
@@ -95,7 +97,7 @@ spec:
               apiVersion: kubevirt.io/v1
               kind: VirtualMachineInstance
               metadata:
-                name: vm-instance-remote-site-b
+                name: remote-site-b
               (status.interfaces[0].ipAddress != null): true
 
     # ── 2. A pre-route tenant pod (to prove the PendingRoutes surface) ────────
@@ -191,52 +193,185 @@ spec:
               kind: Service
               metadata:
                 name: site-router-a-tunnel
-              (status.loadBalancer.ingress[0] != null): true
+              # ingress[0].ip (not just ingress[0]) so the VIP is actually
+              # assigned — metallb can publish an ingress entry a moment before
+              # its .ip, and the tunnel setup needs the concrete address.
+              (status.loadBalancer.ingress[0].ip != null): true
+
+    # ── 5a. Lineage-label bridge for the gateway pod ─────────────────────────
+    - name: label-gateway-pod-lineage
+      description: >-
+        The controller discovers the gateway virt-launcher pod via the lineage
+        labels apps.cozystack.io/application.{kind,name}. On a platform build that
+        registers the SiteRouter app kind (aggregated API + ApplicationDefinition),
+        the lineage webhook stamps those labels automatically at pod creation. This
+        suite exercises the controller directly through the HelmRelease projection,
+        so on a platform build that predates the SiteRouter app registration the
+        lineage webhook cannot resolve the SiteRouter GVK and leaves the pod
+        unlabelled — this step applies the labels so the controller can mediate. It
+        is idempotent (--overwrite), so it is a harmless no-op where the webhook has
+        already labelled the pod.
+      try:
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              end=$(( $(date +%s) + 90 ))
+              while :; do
+                pod=$(kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name=site-router-a \
+                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+                [ -n "$pod" ] && break
+                [ "$(date +%s)" -ge "$end" ] && { echo "gateway pod not found"; exit 1; }
+                sleep 3
+              done
+              kubectl -n "$NAMESPACE" label pod "$pod" \
+                apps.cozystack.io/application.kind=SiteRouter \
+                apps.cozystack.io/application.name=a --overwrite
+              echo "gateway pod $pod labelled for controller lineage discovery"
+            check:
+              ($error == null): true
+
+    # ── 5b. Probe-driver (in-cluster exec host for B SSH + A mgmt-API) ────────
+    - name: create-probe-driver
+      description: >-
+        The reachability / MSS / negative-security scripts drive probes from B's
+        guest and read A's firewall counters through this pod (see _probe-lib.sh).
+        Created before establish-tunnel because that step also pushes B's IPsec
+        over B's mgmt API through it. Readiness gates on sshpass+curl+python3.
+      try:
+        - apply:
+            file: probe-driver.yaml
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: probe-driver
+              status:
+                phase: Running
+                (containerStatuses[0].ready): true
 
     # ── 6. Establish the tunnel and assert it is Up ──────────────────────────
     - name: establish-tunnel
       description: >-
-        Wire the two ends (A responder ⇄ B initiator) and assert the IPsec SA
-        comes up. Tunnel state is surfaced via the controller metric
-        site_router_tunnel_up (there is no CR status subresource in Phase 1, D9),
-        so this polls the metrics endpoint — an event-driven backstop before any
-        reachability script.
+        Wire the two ends (A responder ⇄ B initiator) and wait for the IPsec SA to
+        come up. A's peer is controller-pushed from spec.values; B is a plain VM,
+        so its initiator IPsec is pushed live over B's mgmt API here (it needs A's
+        runtime VIP + B's runtime pod IP). The controller metric
+        site_router_tunnel_up is the intended tunnel-state surface (no CR status
+        subresource in Phase 1, D9) but under-reports on the current VyOS 1.5 image
+        (see step 3), so this polls A's authoritative SA state over the mgmt API —
+        an event-driven backstop before any reachability script.
       try:
         - script:
-            timeout: 8m
+            timeout: 16m
             content: |
               set -eu
-              # A is the responder; its site-to-site peer config needs B's
-              # address, and B (the initiator) needs A's tunnel endpoint. Both are
-              # pod-network addresses only known at runtime.
-              B_IP=$(kubectl -n "$NAMESPACE" get vmi vm-instance-remote-site-b \
-                -o jsonpath='{.status.interfaces[0].ipAddress}')
-              A_TUNNEL=$(kubectl -n "$NAMESPACE" get svc site-router-a-tunnel \
-                -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-              [ -n "$B_IP" ] && [ -n "$A_TUNNEL" ] || { echo "could not resolve B_IP/A_TUNNEL"; exit 1; }
+              # A is the responder (its VIP is dialed in); B (the initiator) dials
+              # that VIP. All endpoints are runtime-only pod-network / LB addresses.
+              # Resolve them, retrying until all four populate: the LB VIP
+              # (loadBalancer.ingress[].ip), the VMI/pod IPs and the api-key Secret
+              # each settle a few seconds after their owning assert passes (an
+              # assert can see ingress[0] present before metallb writes its .ip), so
+              # a one-shot read races an empty value.
+              rend=$(( $(date +%s) + 180 ))
+              while :; do
+                B_IP=$(kubectl -n "$NAMESPACE" get vmi remote-site-b \
+                  -o jsonpath='{.status.interfaces[0].ipAddress}' 2>/dev/null || true)
+                A_VIP=$(kubectl -n "$NAMESPACE" get svc site-router-a-tunnel \
+                  -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                A_POD_IP=$(kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name=site-router-a \
+                  -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+                A_TOKEN=$(kubectl -n "$NAMESPACE" get secret site-router-a-api-key \
+                  -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || true)
+                if [ -n "$B_IP" ] && [ -n "$A_VIP" ] && [ -n "$A_POD_IP" ] && [ -n "$A_TOKEN" ]; then break; fi
+                [ "$(date +%s)" -ge "$rend" ] && { echo "could not resolve tunnel endpoints: B_IP='$B_IP' A_VIP='$A_VIP' A_POD_IP='$A_POD_IP' A_TOKEN_len=${#A_TOKEN}"; exit 1; }
+                sleep 5
+              done
+              PSK=cozystack-e2e-site-router-psk
+              B_KEY=REMOTEB0000000000000000000000000000000B
 
-              # Point A at B's address (triggers an HR re-render → controller re-push).
-              kubectl -n "$NAMESPACE" patch siterouter a --type merge \
-                -p "{\"spec\":{\"peer\":{\"address\":\"${B_IP}\"}}}"
+              # 1. Point A at B's address (patch the HelmRelease spec.values → the
+              #    controller re-pushes A's peer with remote-address=B_IP,
+              #    local-id=VIP; the chart re-render is a no-op for the dataplane).
+              kubectl -n "$NAMESPACE" patch helmrelease site-router-a --type merge \
+                -p "{\"spec\":{\"values\":{\"peer\":{\"address\":\"${B_IP}\"}}}}"
 
-              # TODO(T13): configure B's guest (live) to dial A_TUNNEL with PSK
-              # cozystack-e2e-site-router-psk, forced UDP encapsulation, tunnel
-              # local 192.0.2.0/24 ↔ remote <cluster backend network>. Until B
-              # dials in, the tunnel-up poll below times out (fails loudly — no
-              # false green). See remote-site-b.yaml + _probe-lib.sh.
+              # 2. Push B's initiator IPsec over B's mgmt API (the proven config):
+              #    IKEv2/ESP aes256/sha256/dh-group14 (pfs dh-group14); global PSK
+              #    id-list [B_IP, A_VIP]; peer siteA dials A_VIP with forced UDP
+              #    encapsulation, local-id=B_IP / remote-id=A_VIP; tunnel local
+              #    {192.0.2.0/24 (declared), 198.51.100.0/24 (undeclared, negative
+              #    case 1)} ↔ remote 0.0.0.0/0. The config JSON is built here, then
+              #    base64-encoded and handed to the probe-driver in an env var:
+              #    `kubectl exec -i` stdin does not reliably deliver a file, and
+              #    base64-in-env sidesteps all nested-shell quoting.
+              cat > /tmp/b-ipsec.json <<JSON
+              [
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","lifetime","3600"]},
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","pfs","dh-group14"]},
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","proposal","1","encryption","aes256"]},
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","proposal","1","hash","sha256"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","key-exchange","ikev2"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","lifetime","28800"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","proposal","1","dh-group","14"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","proposal","1","encryption","aes256"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","proposal","1","hash","sha256"]},
+               {"op":"set","path":["vpn","ipsec","authentication","psk","siteA","id","${B_IP}"]},
+               {"op":"set","path":["vpn","ipsec","authentication","psk","siteA","id","${A_VIP}"]},
+               {"op":"set","path":["vpn","ipsec","authentication","psk","siteA","secret","${PSK}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","authentication","local-id","${B_IP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","authentication","mode","pre-shared-secret"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","authentication","remote-id","${A_VIP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","connection-type","initiate"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","default-esp-group","ROUTER-ESP"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","force-udp-encapsulation"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","ike-group","ROUTER-IKE"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","local-address","${B_IP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","remote-address","${A_VIP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","tunnel","1","local","prefix","192.0.2.0/24"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","tunnel","1","local","prefix","198.51.100.0/24"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","tunnel","1","remote","prefix","0.0.0.0/0"]}
+              ]
+              JSON
+              cfg_b64=$(base64 < /tmp/b-ipsec.json | tr -d '\n')
 
-              # Poll the controller tunnel-up gauge for peer A until it reads Up (1).
-              # site_router_tunnel_up{namespace,instance,peer} — instance="a".
-              trap '[ -n "${pf_pid:-}" ] && kill "$pf_pid" 2>/dev/null || true' EXIT
-              kubectl -n cozy-site-router port-forward deploy/site-router-controller 18080:8080 >/dev/null 2>&1 &
-              pf_pid=$!
-              timeout 30 sh -ec 'until nc -z localhost 18080; do sleep 1; done'
-              timeout 300 sh -ec '
-                until curl -sf localhost:18080/metrics \
-                  | grep -Eq "site_router_tunnel_up\{[^}]*instance=\"a\"[^}]*\} 1"; do
-                  sleep 5
-                done'
-              echo "tunnel A⇄B is Up (site_router_tunnel_up=1)"
+              # Retry until B's mgmt API is up and the commit reports success
+              # (B's VyOS guest finishes booting and starts its https API a couple
+              # of minutes after the VMI first reports its IP).
+              end=$(( $(date +%s) + 300 ))
+              while :; do
+                resp=$(kubectl -n "$NAMESPACE" exec probe-driver -- \
+                  env DB64="$cfg_b64" BIP="$B_IP" BKEY="$B_KEY" sh -c '
+                    data=$(echo "$DB64" | base64 -d)
+                    curl -k -s --max-time 20 "https://$BIP/configure" \
+                      --form-string "data=$data" --form-string "key=$BKEY"' 2>/dev/null || true)
+                case "$resp" in *'"success": true'*|*'"success":true'*) echo "B initiator IPsec committed"; break ;; esac
+                [ "$(date +%s)" -ge "$end" ] && { echo "timeout committing B IPsec; last response: ${resp:-<none>}"; exit 1; }
+                sleep 5
+              done
+
+              # 3. Wait for the IPsec SA to come up. Read A's authoritative
+              #    `show vpn ipsec sa` over the mgmt API (State column == "up")
+              #    rather than the controller's site_router_tunnel_up gauge, which
+              #    under-reports on VyOS 1.5 (its SA parser expects the swanctl
+              #    statusall format, not the table `show vpn ipsec sa` returns).
+              #    Budget covers A's guest boot + the controller's IPsec push
+              #    (which only lands once A's mgmt API is up) + IKE negotiation.
+              end=$(( $(date +%s) + 420 ))
+              while :; do
+                if kubectl -n "$NAMESPACE" exec probe-driver -- \
+                     env IP="$A_POD_IP" KEY="$A_TOKEN" sh -c '
+                       curl -k -s --max-time 15 "https://$IP/show" \
+                         --form-string "data={\"op\":\"show\",\"path\":[\"vpn\",\"ipsec\",\"sa\"]}" \
+                         --form-string "key=$KEY" \
+                       | jq -r ".data" | awk "\$2==\"up\"{f=1} END{exit !f}"' 2>/dev/null; then
+                  echo "IPsec SA is up (A observes the tunnel established)"; break
+                fi
+                [ "$(date +%s)" -ge "$end" ] && { echo "timeout waiting for IPsec SA up on A"; exit 1; }
+                sleep 5
+              done
             check:
               ($error == null): true
 
@@ -430,16 +565,27 @@ spec:
               NODE_IP=$(kubectl get nodes \
                 -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
               API_CLUSTERIP=$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')
-              # A pod outside tenant-test (another tenant / a system namespace).
-              OTHER_POD_IP=$(kubectl -n cozy-system get pods \
-                -o jsonpath='{.items[?(@.status.podIP)].status.podIP}' | awk '{print $1}')
+              # A POD-NETWORK pod outside tenant-test (another tenant / a system
+              # namespace). Must be pod-network (podIP != hostIP): a host-network
+              # pod's IP is a node address, which the guest TUNNEL-INGRESS drops
+              # before Cilium — this case must exercise the Cilium pod-identity
+              # policy, so filter those out and take the first pod-network pod in
+              # any other namespace.
+              OTHER_POD_IP=$(kubectl get pods -A \
+                -o jsonpath='{range .items[*]}{.status.podIP}{" "}{.status.hostIP}{" "}{.metadata.namespace}{"\n"}{end}' \
+                | awk -v ns="$NAMESPACE" '$1!="" && $1!=$2 && $3!=ns {print $1; exit}')
 
               # ── DROP cases: <desc> <guard-check> <proto> <dst> [port] ─────────
-              # 1. Source OUTSIDE remoteCIDRs → guest TUNNEL-INGRESS source filter
-              #    (default-action drop): decrypted, source not in the allow-list.
+              # 1. Source OUTSIDE remoteCIDRs → rejected at A's IPsec SA traffic
+              #    selector. A's negotiated remote TS is remoteCIDRs (192.0.2.0/24),
+              #    so a 198.51.100.x source is never carried in a child SA and
+              #    never decrypted. PRIMARY assertion is NON-DELIVERY; the
+              #    attribution is that the TUNNEL-INGRESS default-action counter
+              #    stays FLAT — the packet never reached that chain, proving the
+              #    drop was upstream at the SA, not at the guest source filter.
               PROBE_SRC=198.51.100.7 \
                 assert_dropped "source outside remoteCIDRs" \
-                  "guest_counter_incremented TUNNEL-INGRESS default-action" \
+                  "guest_counter_flat TUNNEL-INGRESS default-action" \
                   tcp "$BACKEND_IP" 8080
 
               # 2. Another tenant's pod → Cilium tenant isolation (POLICY_DENIED):
@@ -456,16 +602,23 @@ spec:
                 tcp "$NODE_IP" 10250
 
               # 4. Kubernetes API ClusterIP → Cilium (reserved:kube-apiserver
-              #    identity denies the routed source).
+              #    identity denies the routed source). TUNNEL-INGRESS rule 20 admits
+              #    the service CIDR, so the guest forwards it; Cilium then denies it
+              #    at the kube-apiserver identity. The ClusterIP is DNAT'd to the
+              #    apiserver endpoint BEFORE the policy check, so the drop record
+              #    carries the "kube-apiserver" identity, not the ClusterIP — match
+              #    on that identity rather than $API_CLUSTERIP.
               assert_dropped "kubernetes API" \
-                "hubble_dropped $API_CLUSTERIP POLICY_DENIED" \
+                "hubble_dropped kube-apiserver POLICY_DENIED" \
                 tcp "$API_CLUSTERIP" 443
 
-              # 5. 169.254.0.0/16 incl. metadata → gateway egressDeny CNP
-              #    (explicit toCIDR 169.254.0.0/16). The drop is enforced by the
-              #    guard whether or not the endpoint is routable in the sandbox.
+              # 5. 169.254.0.0/16 incl. metadata → guest TUNNEL-INGRESS
+              #    default-action drop. Link-local is neither the tenant pod CIDR
+              #    (TUNNEL-INGRESS rule 10) nor the service CIDR (rule 20), so it is
+              #    dropped at the guest source filter BEFORE it can egress to
+              #    Cilium — the gateway egressDeny CNP never sees it.
               assert_dropped "link-local / metadata 169.254.169.254" \
-                "hubble_dropped 169.254.169.254 POLICY_DENIED" \
+                "guest_counter_incremented TUNNEL-INGRESS default-action" \
                 tcp 169.254.169.254 80
 
               # 6. VyOS management API over the tunnel → guest Boundary-A drop
@@ -477,10 +630,14 @@ spec:
                 "guest_counter_incremented input 1" \
                 tcp "$GW_IP" 22
 
-              # 7. Arbitrary world destination → guest forward default-deny +
-              #    TUNNEL-INGRESS dest-constraint (no default route in routed mode).
+              # 7. Arbitrary world destination → guest TUNNEL-INGRESS
+              #    default-action drop. A world address is neither the tenant pod
+              #    CIDR nor the service CIDR, and routed mode has no default route
+              #    into the cluster. The tunnel-decrypted path hits TUNNEL-INGRESS
+              #    first (forward rule 20 jumps to it), so its default-action is
+              #    the guard that drops the packet.
               assert_dropped "arbitrary world destination" \
-                "guest_counter_incremented forward default-action" \
+                "guest_counter_incremented TUNNEL-INGRESS default-action" \
                 tcp 203.0.113.10 443
 
               # ── ALLOW case: declared remote source → intended tenant dest ─────
@@ -508,9 +665,9 @@ spec:
         - delete:
             timeout: 5m
             ref:
-              apiVersion: apps.cozystack.io/v1alpha1
-              kind: SiteRouter
-              name: a
+              apiVersion: helm.toolkit.fluxcd.io/v2
+              kind: HelmRelease
+              name: site-router-a
         # Route withdrawn (B's remoteCIDR no longer in the namespace annotation).
         - assert:
             timeout: 2m
