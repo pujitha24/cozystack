@@ -204,6 +204,24 @@ func readyObjects(t *testing.T, name string, values map[string]interface{}, podI
 		gwPod("virt-launcher-"+releasePrefix+name+"-abcde", name, podIP),
 		pskSecret(name, "shared-secret"),
 		apiKeySecret(name, "api-token-xyz"),
+		tunnelService(name, "10.10.100.200"),
+	}
+}
+
+// tunnelService builds the tunnel LoadBalancer Service (site-router-<name>-tunnel)
+// with an assigned ingress IP. That IP is the gateway's IKE identity
+// (render.Inputs.ExternalIP); a configured tunnel is not pushed until it is present
+// (the reconcile requeues with reasonTunnelAddressPending), so any config-push
+// fixture must include it.
+func tunnelService(name, lbIP string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: releasePrefix + name + tunnelServiceSuffix, Namespace: "tenant-test"},
+		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
+		Status: corev1.ServiceStatus{
+			LoadBalancer: corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{{IP: lbIP}},
+			},
+		},
 	}
 }
 
@@ -453,6 +471,7 @@ func TestReconcile_ConfigureErrorRedactsSecretStraddlingTruncateBoundary(t *test
 		gwPod(podName, "demo", "10.244.0.5"),
 		pskSecret("demo", psk),
 		apiKeySecret("demo", token),
+		tunnelService("demo", "10.10.100.200"),
 	}
 	r, rec := newVyOSReconciler(t, fakeV, objs...)
 
@@ -481,6 +500,41 @@ func TestReconcile_ConfigureErrorRedactsSecretStraddlingTruncateBoundary(t *test
 	}
 	if !foundRedacted {
 		t.Errorf("expected the redaction placeholder in the ConfigureFailed event, events: %v", events)
+	}
+}
+
+// TestReconcile_TunnelAddressPending proves the controller does NOT push an IPsec
+// config before the tunnel LoadBalancer IP is assigned. That IP is the gateway's
+// IKE identity (render.ExternalIP); pushing early stamps the pod IP as the
+// identity, which no remote peer can authenticate — the Phase-B live finding. The
+// reconcile must requeue with zero Configure calls until the Service gets its
+// ingress IP.
+func TestReconcile_TunnelAddressPending(t *testing.T) {
+	t.Parallel()
+	fakeV := &fakeVyOS{}
+	// Everything a push needs EXCEPT an assigned tunnel LB IP: the Service exists
+	// but its status.loadBalancer.ingress is empty.
+	svcNoIP := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: releasePrefix + "demo" + tunnelServiceSuffix, Namespace: "tenant-test"},
+		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
+	}
+	objs := []client.Object{
+		siteRouterHRWithValues(t, "demo", routedValues()),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-test"}},
+		cozystackConfigMap(),
+		gwPod("virt-launcher-"+releasePrefix+"demo-abcde", "demo", "10.244.0.5"),
+		pskSecret("demo", "shared-secret"),
+		apiKeySecret("demo", "api-token-xyz"),
+		svcNoIP,
+	}
+	r, _ := newVyOSReconciler(t, fakeV, objs...)
+
+	res := reconcileInstance(t, r, "demo")
+	if fakeV.Configures() != 0 {
+		t.Errorf("expected no Configure while the tunnel LB IP is pending, got %d", fakeV.Configures())
+	}
+	if res.RequeueAfter != runtimePollInterval {
+		t.Errorf("expected a requeue while the tunnel LB IP is pending, got %s", res.RequeueAfter)
 	}
 }
 

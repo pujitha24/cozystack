@@ -81,6 +81,12 @@ const (
 	// IP; there is no management endpoint to dial, so the controller requeues (the
 	// pod watch also re-triggers).
 	reasonGatewayPending = "GatewayPending"
+	// reasonTunnelAddressPending marks a configured tunnel whose LoadBalancer IP is
+	// not yet assigned. That IP is the gateway's IKE identity (render.ExternalIP);
+	// pushing before it is known would stamp an IPsec config with the wrong
+	// identity (the pod IP) that no remote peer can authenticate, so the controller
+	// requeues (the Service watch — via the pod/HelmRelease reconcile — re-triggers).
+	reasonTunnelAddressPending = "TunnelAddressPending"
 )
 
 // Secret key/name conventions the chart writes (T04/D6).
@@ -266,7 +272,27 @@ func (r *SiteRouterReconciler) pushVyOSConfig(ctx context.Context, inst *instanc
 		device = defaultTunnelDevice
 	}
 
-	inputs := r.resolveInputs(ctx, inst, psk, device)
+	// The gateway's IKE identity is its tunnel LoadBalancer VIP — the address
+	// remote peers dial and authenticate. Resolve it from the tunnel Service; when
+	// a tunnel is configured we must not push before it is assigned, or strongSwan
+	// comes up presenting the pod IP (which no remote can match) and PSK auth fails.
+	externalIP := ""
+	if stringField(inst.values["peer"], "address") != "" {
+		addr, ok, err := r.readTunnelLBAddress(ctx, inst)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return &reconcileError{
+				reason:       reasonTunnelAddressPending,
+				message:      "tunnel LoadBalancer IP not assigned yet; not pushing an IPsec config whose identity would be the pod IP",
+				requeueAfter: runtimePollInterval,
+			}
+		}
+		externalIP = addr
+	}
+
+	inputs := r.resolveInputs(ctx, inst, psk, device, externalIP)
 	// Record the configured peers so updateMetrics can seed a 0 (Down) gauge for a
 	// tunnel/neighbor that has no active observation yet — a configured-but-down
 	// series, distinct from an absent one.
@@ -492,7 +518,7 @@ func (r *SiteRouterReconciler) pollRuntimeState(ctx context.Context, inst *insta
 // its design default (1320 → clamp 1280); ExternalIP is left empty so VyOS
 // auto-detects the IPsec local-address (Phase-1 responder model — the LB tunnel
 // address wiring is a documented follow-up).
-func (r *SiteRouterReconciler) resolveInputs(ctx context.Context, inst *instance, psk, tunnelDevice string) render.Inputs {
+func (r *SiteRouterReconciler) resolveInputs(ctx context.Context, inst *instance, psk, tunnelDevice, externalIP string) render.Inputs {
 	vals := inst.values
 	remoteCIDRs := stringSlice(vals[remoteCIDRsValueKey])
 
@@ -510,6 +536,7 @@ func (r *SiteRouterReconciler) resolveInputs(ctx context.Context, inst *instance
 		TunnelDevice:       tunnelDevice,
 		RemoteCIDRs:        remoteCIDRs,
 		TenantNetworkCIDRs: tenantNetworkCIDRs(nets),
+		ExternalIP:         externalIP,
 	}
 
 	// Single ipsec peer per instance (schema keeps tunnel.type single-value). A
@@ -716,6 +743,29 @@ func (r *SiteRouterReconciler) readPSK(ctx context.Context, inst *instance) (str
 func (r *SiteRouterReconciler) readAPIToken(ctx context.Context, inst *instance) (string, bool, error) {
 	name := releasePrefix + inst.name + apiKeySecretSuffix
 	return r.readSecretKey(ctx, inst.namespace, name, apiTokenSecretKey)
+}
+
+// readTunnelLBAddress reads the assigned LoadBalancer ingress IP of the instance's
+// tunnel Service (releasePrefix + name + tunnelServiceSuffix). That IP is the
+// gateway's IKE identity (render.Inputs.ExternalIP) — the address remote peers dial
+// and must authenticate. ok=false (not an error) means the Service is absent or has
+// no ingress IP assigned yet — a requeue, not a failure. Read through the uncached
+// reader (Services are deliberately not cached — see the reconciler's CacheByObject).
+func (r *SiteRouterReconciler) readTunnelLBAddress(ctx context.Context, inst *instance) (string, bool, error) {
+	name := releasePrefix + inst.name + tunnelServiceSuffix
+	svc := &corev1.Service{}
+	if err := r.reader().Get(ctx, types.NamespacedName{Namespace: inst.namespace, Name: name}, svc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("get service %s/%s: %w", inst.namespace, name, err)
+	}
+	for _, ing := range svc.Status.LoadBalancer.Ingress {
+		if ing.IP != "" {
+			return ing.IP, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // readSecretKey reads a single key from a namespaced Secret through the uncached

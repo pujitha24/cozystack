@@ -284,8 +284,27 @@ func TestRenderIPSec_EmitsGroupsAndPeerWithDefaults(t *testing.T) {
 		t.Errorf("expected the PSK matched to the peer by remote-address id")
 	}
 
-	if !containsSet(ops, "vpn/ipsec/site-to-site/peer/aws/local-address", "203.0.113.15") {
-		t.Errorf("expected peer local-address from Inputs.ExternalIP")
+	// The gateway sits behind a Service LoadBalancer, so its tunnel VIP
+	// (Inputs.ExternalIP) is not bindable on the pod NIC: local-address is always
+	// "any", and the VIP is the IKE identity instead (peer authentication id + the
+	// gateway's own entry in the PSK id-list). Without both, strongSwan rejects the
+	// peer (rightid = the dialed VIP ≠ our default pod-IP id) and cannot find a key
+	// for its own identity ("no shared key for <self>").
+	if !containsSet(ops, "vpn/ipsec/site-to-site/peer/aws/local-address", "any") {
+		t.Errorf("expected peer local-address any (the VIP is not bindable on the pod NIC)")
+	}
+
+	// VyOS 1.5: the per-peer local identity is `authentication local-id` — a bare
+	// `authentication id` under the peer is rejected as an invalid path.
+	if !containsSet(ops, "vpn/ipsec/site-to-site/peer/aws/authentication/local-id", "203.0.113.15") {
+		t.Errorf("expected peer IKE local-id = Inputs.ExternalIP (the tunnel LB VIP)")
+	}
+	if containsSet(ops, "vpn/ipsec/site-to-site/peer/aws/authentication/id", "203.0.113.15") {
+		t.Errorf("must NOT emit the invalid per-peer `authentication id` path (VyOS 1.5 rejects it)")
+	}
+
+	if !containsSet(ops, "vpn/ipsec/authentication/psk/aws/id", "203.0.113.15") {
+		t.Errorf("expected the gateway's own identity (ExternalIP) in the PSK id-list")
 	}
 
 	if !containsSet(ops, "vpn/ipsec/site-to-site/peer/aws/tunnel/1/local/prefix", "10.0.0.0/24") {

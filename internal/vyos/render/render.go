@@ -180,9 +180,16 @@ type Inputs struct {
 	// touching the render contract.
 	BGPPasswords map[string]string
 
-	// ExternalIP is the IPv4 address the router advertises on its uplink;
-	// used as the local-address of IPsec tunnels. Empty leaves the field
-	// unset and lets VyOS auto-detect.
+	// ExternalIP is the gateway's tunnel address — the LoadBalancer VIP every
+	// remote peer dials and must authenticate the gateway as. It is used as the
+	// IKE identity (the peer `authentication local-id` plus the gateway's own entry
+	// in the PSK id-list), NOT as the strongSwan bind address: the gateway sits
+	// behind a Service LoadBalancer, so this VIP is not held on the pod NIC and
+	// cannot be bound (local-address stays "any"). The controller resolves it from
+	// the tunnel Service's status.loadBalancer.ingress. Empty omits the explicit
+	// identity (VyOS falls back to the pod IP — a tunnel that will not
+	// authenticate behind an LB, which is why the controller gates the push on a
+	// resolved ExternalIP when a tunnel is configured).
 	ExternalIP string
 
 	// ManagementCIDR is the CIDR the controller reaches VyOS from. The
@@ -889,14 +896,32 @@ func renderIPSec(in Inputs) []vyos.Operation {
 		ops = append(ops, set(append(peer, "force-udp-encapsulation"), ""))
 
 		// local-address is REQUIRED in VyOS 1.5 — the commit fails with "Missing
-		// local-address or dhcp-interface on site-to-site peer" without it. Use the
-		// resolved uplink IP when known, else "any" (the Phase-1 responder binds to
-		// whatever the pod NIC carries).
-		localAddr := in.ExternalIP
-		if localAddr == "" {
-			localAddr = "any"
+		// local-address or dhcp-interface on site-to-site peer" without it. It is
+		// always "any": the gateway sits behind a Service LoadBalancer, so its
+		// tunnel VIP (in.ExternalIP) is not held on the pod NIC and cannot be bound.
+		// The responder binds "any" and sources from the pod IP; in.ExternalIP is
+		// the IKE *identity* (below), not the bind address.
+		ops = append(ops, set(append(peer, "local-address"), "any"))
+
+		// IKE identity (see Inputs.ExternalIP): the gateway sources IKE from its pod
+		// IP, but every remote dials — and authenticates — its LoadBalancer VIP. Two
+		// things must therefore carry that VIP or PSK auth fails: (1) the peer's
+		// local IKE id, so the remote's rightid (= the VIP it dialed) matches ours,
+		// and (2) the PSK id-list, so strongSwan finds a key for the gateway's own
+		// identity ("no shared key for <self>" otherwise). VyOS 1.5 spells these on
+		// DIFFERENT paths (validated live against the shipped image): the per-peer
+		// local identity is `authentication local-id` — a bare `authentication id`
+		// under the peer is rejected ("Configuration path ... is not valid") — while
+		// the global PSK id-list is `authentication psk <name> id` (multi-value, so
+		// this adds the VIP alongside the peer id set above). Empty ExternalIP leaves
+		// the VyOS default local id (the pod IP); the controller gates the push on a
+		// resolved ExternalIP when a tunnel exists.
+		if in.ExternalIP != "" {
+			ops = append(ops,
+				set([]string{"vpn", "ipsec", "authentication", "psk", peerName, "id"}, in.ExternalIP),
+				set(append(peer, "authentication", "local-id"), in.ExternalIP),
+			)
 		}
-		ops = append(ops, set(append(peer, "local-address"), localAddr))
 
 		// Tunnels are numbered starting at 1; pair local and remote
 		// subnets 1-to-1. If counts differ, surplus entries are ignored.

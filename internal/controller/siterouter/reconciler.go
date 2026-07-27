@@ -78,6 +78,12 @@ const (
 	// (value: the VM name, which equals the release name site-router-<instance>).
 	vmNameLabel = "vm.kubevirt.io/name"
 
+	// tunnelServiceSuffix is appended to the release name (releasePrefix +
+	// instance) to form the tunnel LoadBalancer Service name (chart:
+	// {{ .Release.Name }}-tunnel). Its assigned ingress IP is the gateway's IPsec
+	// identity (render.Inputs.ExternalIP).
+	tunnelServiceSuffix = "-tunnel"
+
 	// finalizer guards the SiteRouter HelmRelease so the controller can undo its
 	// kube-ovn mediation before the instance disappears. Its cleanup (T07)
 	// restores the gateway pod's port security and removes the namespace routes
