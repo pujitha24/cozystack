@@ -29,8 +29,11 @@ const (
 // IPSecObservation reports the operational state of one IPSec
 // site-to-site peer extracted from `show vpn ipsec sa`.
 type IPSecObservation struct {
-	// PeerName is the strongSwan connection name. The reconciler maps
-	// it back to the user-facing tunnel description.
+	// PeerName is the peer name: the strongSwan connection name with the
+	// -tunnel-<n> child suffix stripped (see stripTunnelChildSuffix). It equals
+	// render.PeerName / the configured tunnel description, so an observed SA
+	// overlays the same site_router_tunnel_up series the configured peer seeds
+	// rather than creating a divergent one.
 	PeerName string
 
 	// PeerAddress is the remote VPN gateway IP. May be empty if the

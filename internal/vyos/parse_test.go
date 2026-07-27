@@ -50,6 +50,30 @@ Connections:
 Security Associations (0 up, 0 connecting):
 `
 
+// sampleIPSecTableUp is the VyOS 1.5-rolling `show vpn ipsec sa` op-mode table
+// captured verbatim from the shipped image (gateway A, the responder, tunnel up).
+// The pre-fix parser recognised only the swanctl format, so it returned nothing
+// for this and site_router_tunnel_up read 0 despite an established SA.
+const sampleIPSecTableUp = `Connection        State    Uptime    Bytes In/Out    Packets In/Out    Remote address    Remote ID     Proposal
+----------------  -------  --------  --------------  ----------------  ----------------  ------------  ---------------------------------------
+router1-tunnel-1  up       44m41s    0B/0B           0/0               10.244.2.123      10.244.2.123  AES_CBC_256/HMAC_SHA2_256_128/MODP_2048
+`
+
+// sampleIPSecTableUpNarrow is the same table from a peer with a shorter connection
+// name (gateway B, the initiator). The column widths differ from sampleIPSecTableUp,
+// so parsing it proves the split-on-whitespace approach (not fixed byte offsets).
+const sampleIPSecTableUpNarrow = `Connection      State    Uptime    Bytes In/Out    Packets In/Out    Remote address    Remote ID      Proposal
+--------------  -------  --------  --------------  ----------------  ----------------  -------------  ---------------------------------------
+siteA-tunnel-1  up       46m26s    0B/0B           0/0               10.10.100.200     10.10.100.200  AES_CBC_256/HMAC_SHA2_256_128/MODP_2048
+`
+
+// sampleIPSecTableEmpty is the table with the header + separator but no data row —
+// the shape the image emits when no CHILD_SA is installed. It must yield no
+// observations (the configured peer's seeded 0/Down gauge then stands).
+const sampleIPSecTableEmpty = `Connection        State    Uptime    Bytes In/Out    Packets In/Out    Remote address    Remote ID     Proposal
+----------------  -------  --------  --------------  ----------------  ----------------  ------------  ---------------------------------------
+`
+
 const sampleBGPSummary = `
 BGP router identifier 203.0.113.15, local AS number 65001 vrf-id 0
 BGP table version 1
@@ -126,6 +150,62 @@ func TestParseIPSecSA_Empty(t *testing.T) {
 
 	if obs := vyos.ParseIPSecSA(""); len(obs) != 0 {
 		t.Errorf("expected no peers, got %d", len(obs))
+	}
+}
+
+func TestParseIPSecSA_VyOS15Table(t *testing.T) {
+	t.Parallel()
+
+	obs := vyos.ParseIPSecSA(sampleIPSecTableUp)
+
+	if len(obs) != 1 {
+		t.Fatalf("expected 1 peer, got %d: %+v", len(obs), obs)
+	}
+
+	// The -tunnel-1 child suffix is stripped so PeerName == render.PeerName, the
+	// key the site_router_tunnel_up gauge is seeded under.
+	if obs[0].PeerName != "router1" {
+		t.Errorf("expected PeerName=router1 (stripped from router1-tunnel-1), got %q", obs[0].PeerName)
+	}
+
+	if obs[0].State != vyos.IPSecTunnelStateUp {
+		t.Errorf("expected State=Up, got %q", obs[0].State)
+	}
+
+	if obs[0].PeerAddress != "10.244.2.123" {
+		t.Errorf("expected PeerAddress=10.244.2.123, got %q", obs[0].PeerAddress)
+	}
+}
+
+func TestParseIPSecSA_VyOS15Table_AdaptiveColumnWidth(t *testing.T) {
+	t.Parallel()
+
+	obs := vyos.ParseIPSecSA(sampleIPSecTableUpNarrow)
+
+	if len(obs) != 1 {
+		t.Fatalf("expected 1 peer, got %d: %+v", len(obs), obs)
+	}
+
+	if obs[0].PeerName != "siteA" {
+		t.Errorf("expected PeerName=siteA, got %q", obs[0].PeerName)
+	}
+
+	if obs[0].State != vyos.IPSecTunnelStateUp {
+		t.Errorf("expected State=Up, got %q", obs[0].State)
+	}
+
+	if obs[0].PeerAddress != "10.10.100.200" {
+		t.Errorf("expected PeerAddress=10.10.100.200, got %q", obs[0].PeerAddress)
+	}
+}
+
+func TestParseIPSecSA_VyOS15Table_NoDataRows(t *testing.T) {
+	t.Parallel()
+
+	// A header + separator with no data row must yield no observations: the header
+	// (field 1 == "State") and the dashed separator are not data rows.
+	if obs := vyos.ParseIPSecSA(sampleIPSecTableEmpty); len(obs) != 0 {
+		t.Errorf("expected no peers for a header-only table, got %d: %+v", len(obs), obs)
 	}
 }
 

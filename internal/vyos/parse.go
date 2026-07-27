@@ -22,17 +22,28 @@ import (
 )
 
 // ParseIPSecSA extracts per-peer state from the text body of
-// `show vpn ipsec sa`. The implementation targets the strongSwan
-// output shipped with VyOS 1.4 and is intentionally permissive: any
-// line it does not recognise is silently skipped. Real-world VyOS
-// versions emit minor textual variations, so callers should treat
-// missing entries as "state unknown" rather than failures.
+// `show vpn ipsec sa`. It recognises two output shapes and is
+// intentionally permissive: any line it does not recognise is silently
+// skipped, so callers should treat missing entries as "state unknown"
+// rather than failures.
 //
-// Recognised line shapes (the leading whitespace varies):
+// Shape 1 — the VyOS 1.4 swanctl text (the leading whitespace varies):
 //
 //	peer-name:  203.0.113.15...203.0.113.10  IKEv2
 //	peer-name[1]: ESTABLISHED 5 seconds ago, ...
 //	peer-name{1}:  INSTALLED, TUNNEL, ...
+//
+// Shape 2 — the VyOS 1.5-rolling op-mode table (validated live against
+// the shipped image). Column widths are content-adaptive, so rows are
+// parsed by splitting on runs of whitespace, never by byte offset:
+//
+//	Connection        State  Uptime  Bytes In/Out  ...  Remote address  ...
+//	----------------  -----  ------  ------------  ...
+//	router1-tunnel-1  up     44m41s  0B/0B         ...  10.244.2.123     ...
+//
+// The connection name is <peer>-tunnel-<n>; the -tunnel-<n> child suffix
+// is stripped so PeerName is the peer name (== render.PeerName, which the
+// site_router_tunnel_up metric keys on).
 func ParseIPSecSA(text string) []IPSecObservation {
 	type entry struct {
 		obs   IPSecObservation
@@ -42,9 +53,31 @@ func ParseIPSecSA(text string) []IPSecObservation {
 	order := []string{}
 	entries := map[string]*entry{}
 
+	// upsert records a state (and optional remote address) for a peer, creating
+	// the entry on first sight. "Up" wins over "Connecting"/"Down" because
+	// INSTALLED can appear after ESTABLISHED for routed connections; otherwise the
+	// first known state sticks.
+	upsert := func(name string, state IPSecTunnelState, addr string) {
+		ent, ok := entries[name]
+		if !ok {
+			ent = &entry{obs: IPSecObservation{PeerName: name}}
+			entries[name] = ent
+			order = append(order, name)
+		}
+		if addr != "" && ent.obs.PeerAddress == "" {
+			ent.obs.PeerAddress = addr
+		}
+		if state == IPSecTunnelStateUp || !ent.known {
+			ent.obs.State = state
+			ent.known = true
+		}
+	}
+
 	for line := range strings.SplitSeq(text, "\n") {
+		// Shape 1 (swanctl): summary line — create the peer at Down until a state
+		// line upgrades it; carries the remote address.
 		if m := ipsecHeaderRe.FindStringSubmatch(line); m != nil {
-			name := m[1]
+			name := stripTunnelChildSuffix(m[1])
 			if _, exists := entries[name]; !exists {
 				entries[name] = &entry{
 					obs: IPSecObservation{
@@ -59,23 +92,16 @@ func ParseIPSecSA(text string) []IPSecObservation {
 			continue
 		}
 
+		// Shape 1 (swanctl): per-SA state line.
 		if m := ipsecStateRe.FindStringSubmatch(line); m != nil {
-			name := m[1]
-			state := normaliseIPSecState(m[2])
+			upsert(stripTunnelChildSuffix(m[1]), normaliseIPSecState(m[2]), "")
+			continue
+		}
 
-			ent, ok := entries[name]
-			if !ok {
-				ent = &entry{obs: IPSecObservation{PeerName: name, State: state}}
-				entries[name] = ent
-				order = append(order, name)
-			}
-
-			// "Up" wins over "Connecting"/"Down" because INSTALLED can
-			// appear after ESTABLISHED for routed connections.
-			if state == IPSecTunnelStateUp || !ent.known {
-				ent.obs.State = state
-				ent.known = true
-			}
+		// Shape 2 (VyOS 1.5-rolling op-mode table): a data row.
+		if name, state, addr, ok := parseIPSecTableRow(line); ok {
+			upsert(name, state, addr)
+			continue
 		}
 	}
 
@@ -85,6 +111,48 @@ func ParseIPSecSA(text string) []IPSecObservation {
 	}
 
 	return out
+}
+
+// parseIPSecTableRow parses one VyOS 1.5-rolling `show vpn ipsec sa` table data
+// row. The table is whitespace-aligned with content-adaptive column widths, so it
+// is split on whitespace runs rather than fixed byte offsets. A data row carries
+// the state word in the second field; the header row (field 1 == "State") and the
+// dashed separator (field 1 is not a state word) return ok=false and are skipped.
+// Fields: 0=Connection, 1=State, 2=Uptime, 3=Bytes, 4=Packets, 5=Remote address.
+func parseIPSecTableRow(line string) (name string, state IPSecTunnelState, addr string, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 2 || !isIPSecStateWord(fields[1]) {
+		return "", IPSecTunnelStateDown, "", false
+	}
+	name = stripTunnelChildSuffix(fields[0])
+	state = normaliseIPSecState(fields[1])
+	if len(fields) >= 6 {
+		addr = fields[5]
+	}
+	return name, state, addr, true
+}
+
+// stripTunnelChildSuffix maps a strongSwan connection name to the peer name by
+// removing the trailing child-SA suffix VyOS appends: peer "router1" tunnel 1 is
+// reported as connection "router1-tunnel-1". The result matches render.PeerName /
+// the configured tunnel description, which the site_router_tunnel_up metric keys
+// on — without stripping, an observed SA would land on a different series than the
+// seeded 0 gauge. Names without the suffix pass through unchanged.
+func stripTunnelChildSuffix(name string) string {
+	return tunnelChildSuffixRe.ReplaceAllString(name, "")
+}
+
+var tunnelChildSuffixRe = regexp.MustCompile(`-tunnel-\d+$`)
+
+// isIPSecStateWord reports whether s is a recognised SA state token — used to tell
+// a table data row from the header ("State") and dashed separator lines.
+func isIPSecStateWord(s string) bool {
+	switch strings.ToUpper(s) {
+	case "UP", "DOWN", "CONNECTING", "ESTABLISHED", "INSTALLED", "CREATED", "REKEYING":
+		return true
+	default:
+		return false
+	}
 }
 
 // ipsecHeaderRe matches the connection summary line:
@@ -100,10 +168,12 @@ var ipsecStateRe = regexp.MustCompile(`^\s*([A-Za-z0-9._-]+)[\[\{]\d+[\]\}]:\s*(
 
 func normaliseIPSecState(raw string) IPSecTunnelState {
 	switch strings.ToUpper(raw) {
-	case "ESTABLISHED", "INSTALLED":
+	case "UP", "ESTABLISHED", "INSTALLED":
 		return IPSecTunnelStateUp
 	case "CONNECTING", "CREATED", "REKEYING":
 		return IPSecTunnelStateConnecting
+	case "DOWN":
+		return IPSecTunnelStateDown
 	default:
 		return IPSecTunnelStateDown
 	}
