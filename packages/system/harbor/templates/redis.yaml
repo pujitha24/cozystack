@@ -13,6 +13,11 @@ metadata:
   labels:
     app.kubernetes.io/instance: {{ .Values.harbor.fullnameOverride }}-redis
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+    # The freshworks-oss operator reconciles only RedisFailovers whose
+    # operator-group label matches its OPERATOR_GROUP_ID (see
+    # packages/system/redis-operator/values.yaml); without it Harbor's Redis is
+    # never provisioned and harbor-core CrashLoops. Keep both sides in sync.
+    redis-failover.freshworks.com/operator-group: cozystack
 spec:
   sentinel:
     replicas: 3
