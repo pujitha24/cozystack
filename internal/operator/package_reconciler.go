@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,6 +46,12 @@ const (
 	AnnotationSkipCozystackValues = "operator.cozystack.io/skip-cozystack-values"
 	// SecretCozystackValues is the name of the secret containing cluster and namespace configuration
 	SecretCozystackValues = "cozystack-values"
+	// SystemDefaultsLimitRangeName is the LimitRange the reconciler maintains in every
+	// system namespace to default container memory requests and limits.
+	SystemDefaultsLimitRangeName = "cozystack-system-defaults"
+	// packageControllerFieldOwner is the server-side-apply field manager used for every
+	// cluster object the Package reconciler owns outright.
+	packageControllerFieldOwner = "cozystack-package-controller"
 )
 
 // parseCRDPolicy maps ComponentInstall.UpgradeCRDs to a helmv2.CRDsPolicy.
@@ -66,6 +73,14 @@ type PackageReconciler struct {
 	HelmReleaseInstallTimeout time.Duration
 	HelmReleaseUpgradeTimeout time.Duration
 	HelmReleaseMaxHistory     int
+	// SystemNamespaceMemoryLimit is the default container memory limit applied through a
+	// LimitRange in every system namespace. A zero quantity disables the LimitRange and
+	// removes any the reconciler previously created.
+	SystemNamespaceMemoryLimit resource.Quantity
+	// SystemNamespaceMemoryRequest is the matching default container memory request. It
+	// must be set whenever the limit is, because Kubernetes otherwise defaults each
+	// request to the limit and reserves that much at schedule time.
+	SystemNamespaceMemoryRequest resource.Quantity
 }
 
 // buildHelmReleaseSpec assembles the Spec applied to every generated
@@ -112,6 +127,7 @@ func (r *PackageReconciler) buildHelmReleaseSpec(componentInstall *cozyv1alpha1.
 // +kubebuilder:rbac:groups=cozystack.io,resources=packagesources,verbs=get;list;watch
 // +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=core,resources=limitranges,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *PackageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -806,6 +822,8 @@ func (r *PackageReconciler) reconcileNamespaces(ctx context.Context, pkg *cozyv1
 
 	// Create or update all namespaces
 	for nsName := range targetNamespaces {
+		isSystem := !strings.HasPrefix(nsName, "tenant-")
+
 		namespace := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   nsName,
@@ -816,7 +834,7 @@ func (r *PackageReconciler) reconcileNamespaces(ctx context.Context, pkg *cozyv1
 			},
 		}
 
-		if !strings.HasPrefix(nsName, "tenant-") {
+		if isSystem {
 			namespace.Labels["cozystack.io/system"] = "true"
 		}
 
@@ -829,9 +847,75 @@ func (r *PackageReconciler) reconcileNamespaces(ctx context.Context, pkg *cozyv1
 			return fmt.Errorf("failed to reconcile namespace %s: %w", nsName, err)
 		}
 		logger.Info("reconciled namespace", "name", nsName, "privileged", privileged[nsName])
+
+		if isSystem {
+			if err := r.reconcileSystemDefaultsLimitRange(ctx, nsName); err != nil {
+				logger.Error(err, "failed to reconcile system defaults LimitRange", "namespace", nsName)
+				return fmt.Errorf("failed to reconcile system defaults LimitRange in namespace %s: %w", nsName, err)
+			}
+		}
 	}
 
 	return nil
+}
+
+// reconcileSystemDefaultsLimitRange maintains the LimitRange that gives every container
+// in a system namespace a default memory request and limit.
+//
+// The Talos userspace OOM handler (v1.12+) selects its victim by ranking cgroups with
+// `memory_max.hasValue() ? 0.0 : {Besteffort: 1.0, Burstable: 0.5, ...}[class] *
+// memory_current`, and discards every cgroup that scores zero. A pod whose containers all
+// carry a memory limit has memory.max set on its cgroup, scores zero, and is never
+// selected. A pod without one stays a candidate however little memory it is using and
+// whatever actually caused the pressure — victim selection is decoupled from the trigger.
+// System components are overwhelmingly the pods without limits, so they were the ones
+// being killed on behalf of tenant workloads that were the real source of the pressure.
+//
+// Defaulting a limit across system namespaces takes those components out of the candidate
+// set. Tenant namespaces deliberately get no LimitRange: a tenant workload running without
+// a limit should stay eligible, which is the upstream design working as intended.
+//
+// The limit is a ceiling rather than a reservation, so it is set well above real usage —
+// the point is that memory.max exists, not that it binds. It must still stay above the
+// largest memory request in any system namespace, because a defaulted limit below a
+// container's own request is rejected at admission.
+func (r *PackageReconciler) reconcileSystemDefaultsLimitRange(ctx context.Context, nsName string) error {
+	// Disabled: drop a LimitRange left over from an earlier configuration so the knob
+	// stays reversible.
+	if r.SystemNamespaceMemoryLimit.IsZero() {
+		stale := &corev1.LimitRange{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      SystemDefaultsLimitRangeName,
+				Namespace: nsName,
+			},
+		}
+		if err := r.Delete(ctx, stale); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+
+	limitRange := r.systemDefaultsLimitRange(nsName)
+	limitRange.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("LimitRange"))
+
+	return r.Patch(ctx, limitRange, client.Apply, client.FieldOwner(packageControllerFieldOwner), client.ForceOwnership)
+}
+
+// systemDefaultsLimitRange builds the LimitRange applied to a system namespace.
+func (r *PackageReconciler) systemDefaultsLimitRange(nsName string) *corev1.LimitRange {
+	return &corev1.LimitRange{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      SystemDefaultsLimitRangeName,
+			Namespace: nsName,
+		},
+		Spec: corev1.LimitRangeSpec{
+			Limits: []corev1.LimitRangeItem{{
+				Type:           corev1.LimitTypeContainer,
+				Default:        corev1.ResourceList{corev1.ResourceMemory: r.SystemNamespaceMemoryLimit},
+				DefaultRequest: corev1.ResourceList{corev1.ResourceMemory: r.SystemNamespaceMemoryRequest},
+			}},
+		},
+	}
 }
 
 // resolvePrivilegedNamespaces checks all PackageSources and their corresponding Packages
@@ -898,7 +982,7 @@ func (r *PackageReconciler) resolvePrivilegedNamespaces(ctx context.Context, nam
 // createOrUpdateNamespace creates or updates a namespace using server-side apply.
 func (r *PackageReconciler) createOrUpdateNamespace(ctx context.Context, namespace *corev1.Namespace) error {
 	namespace.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Namespace"))
-	return r.Patch(ctx, namespace, client.Apply, client.FieldOwner("cozystack-package-controller"), client.ForceOwnership)
+	return r.Patch(ctx, namespace, client.Apply, client.FieldOwner(packageControllerFieldOwner), client.ForceOwnership)
 }
 
 // cleanupOrphanedHelmReleases removes HelmReleases that are no longer needed
