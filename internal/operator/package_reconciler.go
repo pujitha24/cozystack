@@ -872,8 +872,10 @@ func (r *PackageReconciler) reconcileNamespaces(ctx context.Context, pkg *cozyv1
 // being killed on behalf of tenant workloads that were the real source of the pressure.
 //
 // Defaulting a limit across system namespaces takes those components out of the candidate
-// set. Tenant namespaces deliberately get no LimitRange: a tenant workload running without
-// a limit should stay eligible, which is the upstream design working as intended.
+// set. Tenant namespaces are skipped because they already have one: packages/apps/tenant
+// ships tenant-range-limits, defaulting container memory to 128Mi. Tenant workloads
+// therefore already carry memory.max and are already excluded, which is precisely why
+// system components were the only candidates left to kill.
 //
 // The limit is a ceiling rather than a reservation, so it is set well above real usage —
 // the point is that memory.max exists, not that it binds. It must still stay above the

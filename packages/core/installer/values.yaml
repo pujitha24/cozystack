@@ -46,7 +46,9 @@ cozystackOperator:
   # sets memory.max and buys immunity — a request merely demotes BestEffort to
   # Burstable, which under strictCgroupClassOrdering still means "killed second".
   # Without this, system components are the victims whenever a tenant workload
-  # drives node memory PSI, because the tenant workload has limits and they do not.
+  # drives node memory PSI, because the tenant workload has limits and they do not:
+  # packages/apps/tenant already ships tenant-range-limits, which defaults container
+  # memory in every tenant namespace. This closes the same gap for system namespaces.
   #
   # A ceiling, not a reservation: pick it well above real usage. It must stay above
   # the largest memory request in any system namespace — a defaulted limit below a
