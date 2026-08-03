@@ -20,19 +20,21 @@ tests:
     set:
       cozystackOperator.variant: talos
     asserts:
-      # Asserted as the whole args list rather than two notContains, so a knob
-      # rendering as an empty-valued flag also fails.
-      - equal:
+      # Asserted as the empty-valued flag forms rather than as the whole args
+      # list. Dropping the `ne … ""` guard renders exactly these, since both
+      # values default to "", so this still catches the regression it is here
+      # for. Pinning the whole list instead would embed the platform source
+      # digest, which breaks the test on every unrelated digest bump and trips
+      # the first-party image-ref guard in promote-rewrite-tags_test.bats.
+      - notContains:
           path: spec.template.spec.containers[0].args
-          value:
-            - --leader-elect=true
-            - --install-flux=true
-            - --install-crds=true
-            - --metrics-bind-address=0
-            - --health-probe-bind-address=0
-            - --platform-source-name=cozystack-platform
-            - --platform-source-url=oci://ghcr.io/cozystack/cozystack/cozystack-packages
-            - --platform-source-ref=digest=sha256:bf68208730860fa8e47f378a0260e79a0262e0783fa63ba4f7f97f57a48b2d23
+          content: --system-namespace-memory-limit=
+        documentSelector:
+          path: kind
+          value: Deployment
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --system-namespace-memory-request=
         documentSelector:
           path: kind
           value: Deployment
