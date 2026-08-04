@@ -1,14 +1,14 @@
-suite: site-router-application must not hard-depend on the opt-in vm-default-images
-# Regression guard for an install-time hang: the SiteRouter app-registration
-# Package must NOT list cozystack.vm-default-images in dependsOn. That package is
-# opt-in (off unless named in bundles.enabledPackages), so a hard dependsOn leaves
-# this registration Package stuck InProgress forever on any install that does not
-# enable it, which blocks the whole cozystack-platform HelmRelease from converging
-# (a timeout on `Package/cozystack.site-router-application status: 'InProgress'`
-# during E2E install). The golden boot image is an instance-time prerequisite
-# (packages/apps/site-router/docs/image-lifecycle.md), not a registration edge. The
-# edges below are non-optional under the IaaS bundle (the same iaas.enabled gate
-# that emits this package), so they always resolve and must stay.
+suite: site-router-application depends only on packages that always resolve
+# Regression guard for an install-time hang: every dependsOn edge on the SiteRouter
+# app-registration Package must be a package that is actually emitted whenever this
+# one is. An edge to an opt-in package (off unless named in bundles.enabledPackages)
+# leaves this registration Package stuck InProgress forever on any install that does
+# not enable it, which blocks the whole cozystack-platform HelmRelease from
+# converging (a timeout on `Package/cozystack.site-router-application status:
+# 'InProgress'` during E2E install). cozystack.vm-default-images is the specific
+# opt-in package this app used to clone its boot image from, and must never come
+# back as an edge. The edges below are all non-optional under the IaaS bundle (the
+# same iaas.enabled gate that emits this package), so they always resolve.
 templates:
   - templates/sources.yaml
 release:
@@ -35,6 +35,13 @@ tests:
       - contains:
           path: spec.variants[0].dependsOn
           content: cozystack.site-router-controller
+      # The golden appliance DataVolume must exist before any instance renders:
+      # the instance render looks it up and fails loudly when it is absent. Safe
+      # as a hard edge because naas.yaml emits it non-optionally under the same
+      # iaas.enabled gate as this package.
+      - contains:
+          path: spec.variants[0].dependsOn
+          content: cozystack.vyos-router-image
       - notContains:
           path: spec.variants[0].dependsOn
           content: cozystack.vm-default-images

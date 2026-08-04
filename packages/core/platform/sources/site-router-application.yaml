@@ -23,18 +23,16 @@ spec:
         # site-router-controller mediates kube-ovn routing/port-security and pushes
         # VyOS config; installed before SiteRouter instances so they reconcile.
         - cozystack.site-router-controller
-        # NOTE: cozystack.vm-default-images is deliberately NOT a dependsOn. It
-        # provides the cozy-public/vm-default-images-vyos-router PVC the default
-        # SiteRouter boot DataVolume clones (templates/dv.yaml), but it is an opt-in
-        # package (off unless listed in bundles.enabledPackages), so a hard dependsOn
-        # leaves THIS registration Package stuck InProgress forever on any install
-        # that does not enable it — which blocks the whole cozystack-platform
-        # HelmRelease from converging (an install-time timeout). The golden image is
-        # an instance-time prerequisite — a SiteRouter instance will not boot without
-        # it, documented in packages/apps/site-router/docs/image-lifecycle.md — not a
-        # registration-time dependency. kubevirt / kubevirt-cdi stay above because
-        # they are non-optional under the IaaS bundle (the same iaas.enabled gate that
-        # emits this package), so they always resolve.
+        # vyos-router-image provides the cozy-public/vyos-router golden DataVolume
+        # every SiteRouter boot disk clones (templates/dv.yaml), and the instance
+        # render looks it up and fails loudly when it is absent — so it must exist
+        # before any instance renders. Safe as a hard dependsOn because naas.yaml
+        # emits it non-optionally under the same iaas.enabled gate that emits this
+        # package, exactly like kubevirt / kubevirt-cdi above, so it always
+        # resolves. (An earlier revision cloned from the opt-in vm-default-images
+        # instead, where a hard dependsOn would have left this registration Package
+        # stuck InProgress forever on any install that did not enable it.)
+        - cozystack.vyos-router-image
       libraries:
         - name: cozy-lib
           path: library/cozy-lib

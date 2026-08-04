@@ -12,15 +12,24 @@
 {{include "cozystack.platform.package.default" (list "cozystack.tcp-balancer-application" $) }}
 {{include "cozystack.platform.package.default" (list "cozystack.vpn-application" $) }}
 {{- /*
-  site-router runs its VyOS gateway in a KubeVirt VM cloned from
-  vm-default-images, so it requires the IaaS bundle (KubeVirt + CDI +
-  vm-default-images). NaaS can be enabled on isp-hosted, where IaaS is not
-  available (iaas.yaml permits bundles.iaas.enabled only on isp-full /
-  isp-full-generic), so emitting site-router unconditionally would leave both
-  packages dependency-blocked forever there. Gate them on the IaaS bundle being
-  enabled — the same switch iaas.yaml uses to emit KubeVirt/CDI.
+  site-router runs its VyOS gateway in a KubeVirt VM whose boot disk is a CDI
+  clone of the golden appliance image, so it requires the IaaS bundle (KubeVirt +
+  CDI). NaaS can be enabled on isp-hosted, where IaaS is not available (iaas.yaml
+  permits bundles.iaas.enabled only on isp-full / isp-full-generic), so emitting
+  site-router unconditionally would leave these packages dependency-blocked
+  forever there. Gate them on the IaaS bundle being enabled — the same switch
+  iaas.yaml uses to emit KubeVirt/CDI.
+
+  vyos-router-image (the golden appliance DataVolume in cozy-public) ships here
+  rather than as an optional package like the Talos worker golden: a tenant
+  Kubernetes node group without image.builtin still boots by importing over HTTP,
+  so a missing Talos golden only costs a slower path, whereas a SiteRouter gateway
+  has no equivalent fallback and cannot boot at all without its golden. Emitting
+  it alongside the app is what makes the default install work; the app also
+  dependsOn it so the golden exists before any instance renders.
 */ -}}
 {{- if .Values.bundles.iaas.enabled }}
+{{include "cozystack.platform.package.default" (list "cozystack.vyos-router-image" $) }}
 {{include "cozystack.platform.package.default" (list "cozystack.site-router-application" $) }}
 {{include "cozystack.platform.package.default" (list "cozystack.site-router-controller" $) }}
 {{- end }}
