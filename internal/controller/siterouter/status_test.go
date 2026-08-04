@@ -27,7 +27,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -168,111 +167,11 @@ func TestMachineReadableReasons_Stable(t *testing.T) {
 		reasonConfigureFailed:           "ConfigureFailed",
 		reasonSourceFilterPending:       "SourceFilterPending",
 		reasonPendingRoutes:             "PendingRoutes",
-		reasonBootImageUnavailable:      "BootImageUnavailable",
 		reasonBGPLocalASNInvalid:        "BGPLocalASNInvalid",
 	}
 	for got, expect := range want {
 		if got != expect {
 			t.Errorf("machine-readable reason drifted: got %q, want %q", got, expect)
 		}
-	}
-}
-
-// goldenDV builds the shared appliance DataVolume the boot disk clones, as
-// unstructured — the controller reads CDI objects by GVK rather than vendoring
-// their API module.
-func goldenDV() *unstructured.Unstructured {
-	dv := &unstructured.Unstructured{}
-	dv.SetGroupVersionKind(dataVolumeGVK)
-	dv.SetNamespace(goldenBootImageNamespace)
-	dv.SetName(goldenBootImageName)
-	return dv
-}
-
-// schemeWithDataVolume registers the CDI DataVolume GVK so the fake client can
-// serve it as unstructured.
-func schemeWithDataVolume(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatalf("add client-go scheme: %v", err)
-	}
-	scheme.AddKnownTypeWithName(dataVolumeGVK, &unstructured.Unstructured{})
-	scheme.AddKnownTypeWithName(dataVolumeGVK.GroupVersion().WithKind(dataVolumeGVK.Kind+"List"), &unstructured.UnstructuredList{})
-	return scheme
-}
-
-// TestSurfaceBootImageUnavailable covers the one failure the chart cannot report.
-// The app chart guards the golden it clones, but `lookup` returns nothing both on a
-// cluster with no golden and under a clusterless `helm template`, so the chart
-// cannot fail on absence without breaking every offline render. The controller
-// always has a live cluster, so a NotFound here is real — and without this Event the
-// symptom is a DataVolume stuck Pending on a source that does not exist, a VM that
-// never boots, and no explanation anywhere.
-func TestSurfaceBootImageUnavailable(t *testing.T) {
-	tests := []struct {
-		name          string
-		goldenPresent bool
-		values        map[string]interface{}
-		wantEvent     bool
-	}{
-		{
-			name:          "golden missing while cloning it -> Warning",
-			goldenPresent: false,
-			values:        map[string]interface{}{},
-			wantEvent:     true,
-		},
-		{
-			name:          "golden present -> silent",
-			goldenPresent: true,
-			values:        map[string]interface{}{},
-			wantEvent:     false,
-		},
-		// The HTTP override never touches the golden, so its absence says nothing
-		// about this instance and must not be reported against it.
-		{
-			name:          "http override with no golden -> silent",
-			goldenPresent: false,
-			values:        map[string]interface{}{"image": map[string]interface{}{"enabled": true}},
-			wantEvent:     false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			scheme := schemeWithDataVolume(t)
-			b := fake.NewClientBuilder().WithScheme(scheme)
-			if tt.goldenPresent {
-				b = b.WithObjects(goldenDV())
-			}
-			c := b.Build()
-			rec := record.NewFakeRecorder(16)
-			r := &SiteRouterReconciler{Client: c, APIReader: c, Scheme: scheme, Recorder: rec}
-
-			inst := &instance{
-				hr:        siteRouterHR("demo"),
-				name:      "demo",
-				namespace: "tenant-test",
-				values:    tt.values,
-			}
-			if err := r.surfaceBootImageUnavailable(context.Background(), inst); err != nil {
-				t.Fatalf("surfaceBootImageUnavailable: %v", err)
-			}
-			got := hasEventReason(rec, reasonBootImageUnavailable)
-			if got != tt.wantEvent {
-				t.Errorf("event %q fired = %v, want %v", reasonBootImageUnavailable, got, tt.wantEvent)
-			}
-		})
-	}
-}
-
-// The golden's address is a contract with two charts
-// (packages/system/vyos-router-image and packages/apps/site-router). Drifting
-// either side makes every gateway clone a source that does not exist, so pin both.
-func TestGoldenBootImageAddress_Stable(t *testing.T) {
-	if goldenBootImageNamespace != "cozy-public" {
-		t.Errorf("golden namespace drifted: got %q, want cozy-public", goldenBootImageNamespace)
-	}
-	if goldenBootImageName != "vyos-router" {
-		t.Errorf("golden name drifted: got %q, want vyos-router", goldenBootImageName)
 	}
 }

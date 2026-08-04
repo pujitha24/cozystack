@@ -1,16 +1,16 @@
 suite: site-router boot DataVolume
 
-# T04/T11 — the boot disk is a CDI DataVolume. By default it clones the shared
-# golden VyOS appliance image (cozy-public/vyos-router) provisioned by
-# packages/system/vyos-router-image, so one registry import per cluster is shared
-# by every gateway. An http source override (image.enabled + image.url) points the
-# boot disk at an operator-hosted appliance disk instead. storageClass is pinned to
-# `replicated` (DRBD/LINSTOR) so the boot disk is live-migratable.
+# T04/T11 — the boot disk is a CDI DataVolume. By default it imports the
+# digest-pinned VyOS appliance containerDisk built by
+# packages/system/vyos-router-image, whose reference this chart carries in
+# images/vyos-router-disk.tag. An http source override (image.enabled + image.url)
+# points the boot disk at an operator-hosted appliance disk instead. storageClass
+# is pinned to `replicated` (DRBD/LINSTOR) so the boot disk is live-migratable.
 #
-# The template's golden guards (absent / phase Failed / StorageClass mismatch) are
-# install-time guards built on lookup(), which returns nothing under
-# `helm template` — so they are no-ops here by construction and cannot be asserted
-# in this suite. What is asserted is the render shape they protect.
+# Importing per instance rather than cloning a shared golden in cozy-public is
+# deliberate: a shared golden is populated only at creation, so advancing the
+# appliance could not replace it and later gateways would boot the previous image
+# while their cloud-init contract had moved on.
 
 templates:
   - templates/dv.yaml
@@ -35,22 +35,21 @@ tests:
           path: spec.contentType
           value: kubevirt
 
-  # The golden's name and namespace are a contract with
-  # packages/system/vyos-router-image/templates/dv.yaml. A drift on either side
-  # makes every instance render fail its golden lookup, so pin both.
-  - it: default source clones the golden VyOS appliance image in cozy-public
+  # The reference comes from images/vyos-router-disk.tag, stamped by the image
+  # build. Assert the scheme and the digest pin rather than a literal digest, so a
+  # build restamping the .tag does not break the suite.
+  - it: default source imports the digest-pinned appliance containerDisk
     documentSelector:
       path: kind
       value: DataVolume
     asserts:
-      - equal:
-          path: spec.source.pvc.name
-          value: vyos-router
-      - equal:
-          path: spec.source.pvc.namespace
-          value: cozy-public
+      - matchRegex:
+          path: spec.source.registry.url
+          pattern: ^docker://.+/vyos-router-disk:.+@sha256:[0-9a-f]{64}$
       - notExists:
           path: spec.source.http
+      - notExists:
+          path: spec.source.pvc
 
   - it: storageClass is pinned to replicated
     documentSelector:
@@ -65,8 +64,6 @@ tests:
   # filesystem-import scratch (decompressed image + ~5.5% fs overhead) overflows a
   # request equal to the virtual size ("virtual image size larger than reported
   # available storage"), which fails the boot-disk import live on VyOS 1.5-rolling.
-  # It must also stay >= the golden's storage, since a clone target can never be
-  # smaller than its source.
   - it: requests 12Gi to fit the CDI filesystem-import scratch over the 10Gi image
     documentSelector:
       path: kind
@@ -89,4 +86,4 @@ tests:
           path: spec.source.http.url
           value: https://images.example.test/vyos-1.5-rolling.qcow2
       - notExists:
-          path: spec.source.pvc
+          path: spec.source.registry

@@ -5,21 +5,19 @@ release:
   name: cozystack
   namespace: cozy-system
 tests:
-  # The site-router feature is only useful once its app catalog registration, its
-  # mediation controller AND the golden appliance image its gateway boots from are
-  # installed. All three must ride the naas bundle (the NaaS analog of
-  # vpn-application); if any regresses to being defined as a PackageSource but
-  # never instantiated by a bundle, the feature silently does not install — and
-  # for the golden specifically, every instance render then fails its lookup. It
-  # also needs the IaaS bundle (KubeVirt/CDI) to run its gateway VM, so all
-  # entries are additionally gated on bundles.iaas.enabled. Guard every package
-  # and both gates.
+  # The site-router feature is only useful once its app catalog registration AND
+  # its mediation controller are installed. Both must ride the naas bundle (the
+  # NaaS analog of vpn-application); if either regresses to being defined as a
+  # PackageSource but never instantiated by a bundle, the feature silently does not
+  # install. It also needs the IaaS bundle (KubeVirt/CDI) to run its gateway VM, so
+  # both entries are additionally gated on bundles.iaas.enabled. Guard both
+  # packages and both gates.
   #
   # Every negated containsDocument below carries `any: true`. Without it the
   # negation passes vacuously (it then requires an exact whole-document match to
   # have been found before `not` can invert anything), so a regression that
   # emitted the package anyway would go unnoticed.
-  - it: emits the site-router application, controller and golden image Packages when naas and iaas are enabled
+  - it: emits the site-router application and controller Packages when naas and iaas are enabled
     set:
       bundles:
         system:
@@ -38,11 +36,6 @@ tests:
           apiVersion: cozystack.io/v1alpha1
           kind: Package
           name: cozystack.site-router-controller
-          any: true
-      - containsDocument:
-          apiVersion: cozystack.io/v1alpha1
-          kind: Package
-          name: cozystack.vyos-router-image
           any: true
 
   # NaaS can be enabled on isp-hosted (or isp-full without IaaS); site-router
@@ -71,12 +64,6 @@ tests:
           name: cozystack.site-router-controller
           any: true
         not: true
-      - containsDocument:
-          apiVersion: cozystack.io/v1alpha1
-          kind: Package
-          name: cozystack.vyos-router-image
-          any: true
-        not: true
 
   - it: emits no site-router Package when naas is disabled
     set:
@@ -98,12 +85,6 @@ tests:
           name: cozystack.site-router-controller
           any: true
         not: true
-      - containsDocument:
-          apiVersion: cozystack.io/v1alpha1
-          kind: Package
-          name: cozystack.vyos-router-image
-          any: true
-        not: true
 
   - it: honours the disabledPackages opt-out for the site-router packages
     set:
@@ -117,7 +98,6 @@ tests:
         disabledPackages:
           - cozystack.site-router-application
           - cozystack.site-router-controller
-          - cozystack.vyos-router-image
     asserts:
       - containsDocument:
           apiVersion: cozystack.io/v1alpha1
@@ -129,11 +109,5 @@ tests:
           apiVersion: cozystack.io/v1alpha1
           kind: Package
           name: cozystack.site-router-controller
-          any: true
-        not: true
-      - containsDocument:
-          apiVersion: cozystack.io/v1alpha1
-          kind: Package
-          name: cozystack.vyos-router-image
           any: true
         not: true

@@ -22,7 +22,7 @@ This is a port + productization of the reference implementation's VyOS router in
 
 ## Phase-1 acceptance checklist (honest status)
 
-Status legend: **done** = implemented and unit-tested in this PR; **deferred-to-empirical** = implemented but its live proof needs a booted gateway (blocked on the published golden image + the e2e run); **follow-up** = tracked, out of Phase-1 scope (`docs/followups.md`).
+Status legend: **done** = implemented and unit-tested in this PR; **deferred-to-empirical** = implemented but its live proof needs a booted gateway (blocked on the published appliance image + the e2e run); **follow-up** = tracked, out of Phase-1 scope (`docs/followups.md`).
 
 | # | Acceptance item | Status |
 |---|------------------|--------|
@@ -34,9 +34,9 @@ Status legend: **done** = implemented and unit-tested in this PR; **deferred-to-
 | 6 | Security guards: source allow-list, Cilium `egressDeny` (169.254 + mgmt), forward default-deny, two-boundary API isolation, api-key not tenant-readable | done (unit-tested; VyOS 1.5 firewall syntax validated live) / follow-up (Boundary-B additive-ingress residual) |
 | 7 | Tunnel-state observability (SA up/down, rekey, counters) | done (up/down + BGP gauges) / follow-up (byte + rekey counters need a guest-command + parser change) |
 | 8 | Negative-security acceptance suite — authored, NOT yet executed (undeclared source / other tenant / node / API / metadata / mgmt-API / world dropped; declared source → tenant dest passes, source preserved) | deferred-to-empirical (the e2e gate; committed and excluded from CI via `DEFERRED_SUITES`, so it has **zero executed evidence of a packet drop** — blocked on the published appliance image for a live run) |
-| 9 | helm-unittest + Go unit + Chainsaw e2e (two-VM) green in CI | done (helm-unittest + Go unit) / deferred-to-empirical (Chainsaw e2e suite committed but deferred from CI until the VyOS golden image ships; live two-VM run) |
+| 9 | helm-unittest + Go unit + Chainsaw e2e (two-VM) green in CI | done (helm-unittest + Go unit) / deferred-to-empirical (Chainsaw e2e suite committed but deferred from CI until the VyOS appliance image ships; live two-VM run) |
 
-The negative-security suite (item 8) is the Phase-1 acceptance gate and is authored as a Chainsaw e2e; its **live** run against a real two-VM topology is blocked on the published cozystack-owned VyOS golden image (see follow-ups). The VyOS-version-specific firewall leaf syntax has been validated live against the shipped image (the `firewall ipv4 …` family and the `ipsec match-ipsec-in`/`match-none-in` matchers) and is kept behind single-point helpers so a future image whose syntax differs is a one-place change; what the e2e still adds is the runtime proof that the guarded packets are actually dropped.
+The negative-security suite (item 8) is the Phase-1 acceptance gate and is authored as a Chainsaw e2e; its **live** run against a real two-VM topology is blocked on the published cozystack-owned VyOS appliance image (see follow-ups). The VyOS-version-specific firewall leaf syntax has been validated live against the shipped image (the `firewall ipv4 …` family and the `ipsec match-ipsec-in`/`match-none-in` matchers) and is kept behind single-point helpers so a future image whose syntax differs is a one-place change; what the e2e still adds is the runtime proof that the guarded packets are actually dropped.
 
 ## Follow-ups (drafts — to be filed by the maintainer)
 

@@ -23,16 +23,15 @@ spec:
         # site-router-controller mediates kube-ovn routing/port-security and pushes
         # VyOS config; installed before SiteRouter instances so they reconcile.
         - cozystack.site-router-controller
-        # vyos-router-image provides the cozy-public/vyos-router golden DataVolume
-        # every SiteRouter boot disk clones (templates/dv.yaml), and the instance
-        # render looks it up and fails loudly when it is absent — so it must exist
-        # before any instance renders. Safe as a hard dependsOn because naas.yaml
-        # emits it non-optionally under the same iaas.enabled gate that emits this
-        # package, exactly like kubevirt / kubevirt-cdi above, so it always
-        # resolves. (An earlier revision cloned from the opt-in vm-default-images
-        # instead, where a hard dependsOn would have left this registration Package
-        # stuck InProgress forever on any install that did not enable it.)
-        - cozystack.vyos-router-image
+        # NOTE: the VyOS appliance image needs no dependsOn edge of its own. The
+        # boot DataVolume imports it from the registry by digest
+        # (packages/apps/site-router/images/vyos-router-disk.tag), so there is no
+        # cluster object to wait for. Earlier revisions cloned a shared PVC and
+        # each acquired a deadlock: an edge to the opt-in cozystack.vm-default-images
+        # left this Package stuck InProgress on any install that did not enable it,
+        # and an edge to a dedicated golden package let an operator strand this one
+        # by naming only that package in bundles.disabledPackages. Importing per
+        # instance removes the class.
       libraries:
         - name: cozy-lib
           path: library/cozy-lib

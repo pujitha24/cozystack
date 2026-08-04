@@ -120,12 +120,14 @@ spec:
               storage: 12Gi
           storageClassName: replicated
         source:
-          pvc:
-            # Cloned by name from the golden appliance DataVolume in cozy-public,
-            # provisioned by packages/system/vyos-router-image (no image URL
-            # committed). Keep in sync with that package's DataVolume name.
-            name: vyos-router
-            namespace: cozy-public
+          registry:
+            # The same digest-pinned appliance containerDisk the site-router boot
+            # disk imports. B is a plain KubeVirt VM, not a HelmRelease projection,
+            # so it cannot read the chart's images/vyos-router-disk.tag itself: the
+            # bring-up step substitutes __VYOS_DISK_REF__ from that same file before
+            # applying, so B and A can never boot different appliances. Do not
+            # hardcode a digest here — CI restamps the .tag on every image build.
+            url: docker://__VYOS_DISK_REF__
   template:
     metadata:
       labels:

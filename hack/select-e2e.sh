@@ -36,11 +36,11 @@ all_apps=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.ya
 #
 # TODO: enable TIA selection of `site-router` once the VyOS appliance image is
 # published — i.e. once a build has stamped a real digest into
-# packages/system/vyos-router-image/images/vyos-router-disk.tag, which is what the
-# golden DataVolume that suite's gateways clone is imported from — and the VyOS 1.5
-# firewall syntax is validated by the T13 empirical run. Then delete it from
-# DEFERRED_SUITES. The src_to_suites mapping below is already correct and needs no
-# change at that point.
+# packages/apps/site-router/images/vyos-router-disk.tag, which is what that
+# suite's gateway boot disks import — and the VyOS 1.5 firewall syntax is
+# validated by the T13 empirical run. Then delete it from DEFERRED_SUITES. The
+# src_to_suites mapping below is already correct and needs no change at that
+# point.
 DEFERRED_SUITES="site-router"
 
 # strip_deferred removes DEFERRED_SUITES entries from a space-separated suite
@@ -66,7 +66,7 @@ src_to_suites() {
     # Chainsaw suite dir is `site-router`. The suffix-strip default already
     # yields `site-router`; pin it explicitly so the mapping is documented and
     # stays correct if the default ever changes. NOTE: `site-router` is currently
-    # in DEFERRED_SUITES (stripped from the final output) until its golden image
+    # in DEFERRED_SUITES (stripped from the final output) until its appliance image
     # ships — this mapping is correct and simply has no CI effect until then.
     site-router-application) echo site-router ;;
     external-dns) echo external-dns ;;

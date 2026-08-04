@@ -35,11 +35,10 @@ tests:
       - contains:
           path: spec.variants[0].dependsOn
           content: cozystack.site-router-controller
-      # The golden appliance DataVolume must exist before any instance renders:
-      # the instance render looks it up and fails loudly when it is absent. Safe
-      # as a hard edge because naas.yaml emits it non-optionally under the same
-      # iaas.enabled gate as this package.
-      - contains:
+      # The appliance image is imported from the registry by digest, so there is no
+      # cluster object to depend on and no package that can be disabled out from
+      # under this one.
+      - notContains:
           path: spec.variants[0].dependsOn
           content: cozystack.vyos-router-image
       - notContains:

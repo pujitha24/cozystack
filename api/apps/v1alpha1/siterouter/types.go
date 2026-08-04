@@ -38,7 +38,7 @@ type ConfigSpec struct {
 	// Explicit CPU and memory sizing for the router VM.
 	// +kubebuilder:default:={}
 	Resources Resources `json:"resources"`
-	// Boot-disk image source override for the router VM. By default the boot disk is a CDI clone of the platform's golden VyOS appliance image (`cozy-public/vyos-router`, provisioned by the `vyos-router-image` package and shipped with site-router), so one registry import per cluster is shared by every gateway. This override exists only to point an installation at an operator-hosted appliance disk instead.
+	// Boot-disk image source override for the router VM. By default the boot disk imports the platform's digest-pinned VyOS appliance containerDisk, built by the `vyos-router-image` package and referenced from this chart's `images/vyos-router-disk.tag`. This override exists only to point an installation at an operator-hosted appliance disk instead.
 	// +kubebuilder:default:={}
 	Image Image `json:"image"`
 	// Source CIDR allowed to reach the VyOS management API (HTTPS 443) through the first-boot firewall. This value and the controller's --management-cidr flag (T05/T06) must agree: both default to the cluster pod CIDR (10.244.0.0/16, the kube-ovn default) and must be kept consistent. On a cluster with a non-default `networking.podCIDR`, set this (and the controller's managementCidr) to that pod CIDR, or the firewall will reject the real controller source. An empty value requires `allowOpenManagement=true` (fail-closed). Constrained to a strict IPv4 CIDR (or empty) so a tenant value cannot inject arbitrary text into the VyOS first-boot config.
@@ -75,7 +75,7 @@ type BGPNeighbor struct {
 }
 
 type Image struct {
-	// Import the boot disk over HTTP from `url` instead of cloning the platform's golden VyOS appliance image.
+	// Import the boot disk over HTTP from `url` instead of the platform's digest-pinned VyOS appliance containerDisk.
 	// +kubebuilder:default:=false
 	Enabled bool `json:"enabled"`
 	// HTTP(S) URL of a VyOS qcow2/raw disk image. Used only when `enabled` is true.

@@ -55,20 +55,3 @@ rules:
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
----
-{{- /*
-  Namespaced, not a ClusterRole rule: the golden appliance DataVolume every
-  gateway boot disk clones lives at exactly one address (cozy-public/vyos-router),
-  so the grant to read it is expressible at namespace scope and belongs there. The
-  controller uses it to report BootImageUnavailable when an instance's clone source
-  is missing — the one absence a chart render cannot distinguish from "no cluster".
-*/ -}}
-kind: Role
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: apps.cozystack.io:site-router-controller:golden-image
-  namespace: cozy-public
-rules:
-- apiGroups: ["cdi.kubevirt.io"]
-  resources: ["datavolumes"]
-  verbs: ["get"]

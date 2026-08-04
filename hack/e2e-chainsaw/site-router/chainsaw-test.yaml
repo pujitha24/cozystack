@@ -63,11 +63,22 @@ spec:
     - name: bring-up-remote-site-b
       description: >-
         Boot B, the second VyOS VM standing in for the external site (IPsec
-        initiator + remote client source). Generous bounds: B clones the VyOS
-        golden image and cold-boots a nested VM.
+        initiator + remote client source). Generous bounds: B imports the VyOS
+        appliance containerDisk and cold-boots a nested VM.
       try:
-        - apply:
-            file: remote-site-b.yaml
+        # Substituted rather than applied directly: B must boot the SAME appliance
+        # digest as A, and that reference lives in the site-router chart's
+        # images/vyos-router-disk.tag, which CI restamps on every image build. A
+        # hardcoded digest here would go stale on the first rebuild.
+        - script:
+            content: |
+              set -eu
+              tag=../../../packages/apps/site-router/images/vyos-router-disk.tag
+              ref="$(tr -d '[:space:]' < "$tag")"
+              [ -n "$ref" ] || { echo "$tag is empty: the VyOS appliance image is not stamped, so B cannot boot"; exit 1; }
+              echo "remote-site-b booting appliance $ref"
+              sed "s|__VYOS_DISK_REF__|${ref}|" remote-site-b.yaml \
+                | kubectl apply -n "$NAMESPACE" -f -
         - assert:
             # 8m: golden-image clone (CDI) + nested VM cold boot. B is a raw
             # KubeVirt VirtualMachine (not a cozystack HelmRelease projection), so

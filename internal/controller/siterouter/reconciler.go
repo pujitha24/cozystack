@@ -235,7 +235,6 @@ type instance struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;patch
 // +kubebuilder:rbac:groups="",resources=services;secrets;configmaps,verbs=get
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get
-// +kubebuilder:rbac:groups=cdi.kubevirt.io,namespace=cozy-public,resources=datavolumes,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 
