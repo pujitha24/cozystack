@@ -13,14 +13,19 @@ VYOS_VERSION     = 1.5-rolling-20260720
 VYOS_ARCH        = amd64
 
 include ../../../hack/common-envs.mk
+include ../../../hack/package.mk
 
 QCOW2 = ../../../_out/assets/vyos-router-$(VYOS_ARCH).qcow2
 
+test:
+	helm unittest .
+
 # Package the qcow2 as a KubeVirt containerDisk OCI image, push it, and stamp the
-# digest .tag into the CONSUMING chart (vm-default-images), mirroring how the
-# talos build stamps bootbox/images/matchbox.tag. In CI the build-vyos job's
-# `git diff` captures that stamped .tag as a patch fragment, which `finalize`
-# reassembles into pr.patch so e2e resolves the freshly-built digest.
+# digest .tag into THIS chart, which templates/dv.yaml reads back via .Files.Get
+# to provision the shared golden DataVolume — so the producer and the consumer of
+# the reference are one package (cf. monitoring -> images/grafana.tag). In CI the
+# build-vyos job's `git diff` captures the stamped .tag as a patch fragment, which
+# `finalize` reassembles into pr.patch so e2e resolves the freshly-built digest.
 image: image-vyos-router-disk
 
 image-vyos-router-disk: qcow2
@@ -29,7 +34,7 @@ image-vyos-router-disk: qcow2
 		--metadata-file images/vyos-router-disk.json \
 		$(BUILDX_ARGS)
 	echo "$(REGISTRY)/vyos-router-disk:$(IMAGE_TAG)@$$(yq e '."containerimage.digest"' images/vyos-router-disk.json -o json -r)" \
-		> ../vm-default-images/images/vyos-router-disk.tag
+		> images/vyos-router-disk.tag
 	rm -f images/vyos-router-disk.json
 
 # Heavy privileged live-build step; produces $(QCOW2). Kept idempotent so a rerun

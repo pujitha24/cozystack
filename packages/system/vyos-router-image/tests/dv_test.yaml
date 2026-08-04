@@ -1,0 +1,70 @@
+suite: golden VyOS site-router appliance DataVolume tests
+
+templates:
+  - templates/dv.yaml
+
+tests:
+  # The DataVolume name is a contract: packages/apps/site-router reconstructs
+  # `vyos-router` in cozy-public to clone this golden. A rename here makes every
+  # SiteRouter render fail its golden lookup, so pin it.
+  - it: renders the golden DataVolume in cozy-public with the contract name
+    asserts:
+      - isKind:
+          of: DataVolume
+      - equal:
+          path: metadata.name
+          value: vyos-router
+      - equal:
+          path: metadata.namespace
+          value: cozy-public
+      - equal:
+          path: spec.contentType
+          value: kubevirt
+      - equal:
+          path: spec.storage.resources.requests.storage
+          value: 12Gi
+      # Must match the StorageClass the site-router boot disk pins, or CDI falls
+      # back to a host-assisted copy over the pod network instead of a
+      # storage-layer clone (the app's render rejects a mismatch outright).
+      - equal:
+          path: spec.storage.storageClassName
+          value: replicated
+      - equal:
+          path: metadata.annotations["cdi.kubevirt.io/storage.usePopulator"]
+          value: "true"
+      - equal:
+          path: metadata.annotations["cdi.kubevirt.io/storage.bind.immediate.requested"]
+          value: "true"
+      # Deleting the golden while a gateway's boot disk is mid-clone strands that
+      # clone, and CDI never re-imports into an already-populated PVC, so the
+      # golden must be orphaned rather than pruned.
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+
+  # The source is the digest-pinned containerDisk this package builds. Assert the
+  # docker:// scheme and the digest pin rather than a literal digest, so a build
+  # restamping images/vyos-router-disk.tag does not break the suite.
+  - it: imports the digest-pinned containerDisk from the stamped .tag
+    asserts:
+      - matchRegex:
+          path: spec.source.registry.url
+          pattern: ^docker://.+/vyos-router-disk:.+@sha256:[0-9a-f]{64}$
+
+  - it: records the VyOS version on the golden for provenance
+    asserts:
+      - equal:
+          path: metadata.annotations["vyos-router-image.cozystack.io/vyos-version"]
+          value: 1.5-rolling-20260720
+
+  - it: honours storage and storageClass overrides
+    set:
+      storage: 16Gi
+      storageClass: local
+    asserts:
+      - equal:
+          path: spec.storage.resources.requests.storage
+          value: 16Gi
+      - equal:
+          path: spec.storage.storageClassName
+          value: local
