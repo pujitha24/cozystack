@@ -121,9 +121,10 @@ spec:
           storageClassName: replicated
         source:
           pvc:
-            # Cloned by name from the published golden image DataVolume in
-            # cozy-public (no image URL committed).
-            name: vm-default-images-vyos-router
+            # Cloned by name from the golden appliance DataVolume in cozy-public,
+            # provisioned by packages/system/vyos-router-image (no image URL
+            # committed). Keep in sync with that package's DataVolume name.
+            name: vyos-router
             namespace: cozy-public
   template:
     metadata:

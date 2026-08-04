@@ -38,7 +38,7 @@ type ConfigSpec struct {
 	// Explicit CPU and memory sizing for the router VM.
 	// +kubebuilder:default:={}
 	Resources Resources `json:"resources"`
-	// Boot-disk image source for the router VM.
+	// Boot-disk image source override for the router VM. By default the boot disk is a CDI clone of the platform's golden VyOS appliance image (`cozy-public/vyos-router`, provisioned by the `vyos-router-image` package and shipped with site-router), so one registry import per cluster is shared by every gateway. This override exists only to point an installation at an operator-hosted appliance disk instead.
 	// +kubebuilder:default:={}
 	Image Image `json:"image"`
 	// Source CIDR allowed to reach the VyOS management API (HTTPS 443) through the first-boot firewall. This value and the controller's --management-cidr flag (T05/T06) must agree: both default to the cluster pod CIDR (10.244.0.0/16, the kube-ovn default) and must be kept consistent. On a cluster with a non-default `networking.podCIDR`, set this (and the controller's managementCidr) to that pod CIDR, or the firewall will reject the real controller source. An empty value requires `allowOpenManagement=true` (fail-closed). Constrained to a strict IPv4 CIDR (or empty) so a tenant value cannot inject arbitrary text into the VyOS first-boot config.
@@ -75,12 +75,9 @@ type BGPNeighbor struct {
 }
 
 type Image struct {
-	// Import the boot disk over HTTP from `url` instead of cloning the golden-image PVC.
+	// Import the boot disk over HTTP from `url` instead of cloning the platform's golden VyOS appliance image.
 	// +kubebuilder:default:=false
 	Enabled bool `json:"enabled"`
-	// Golden image name in cozy-public. Cloned as the boot disk from PVC vm-default-images-<name> unless `enabled` is true.
-	// +kubebuilder:default:="vyos-router"
-	Name string `json:"name"`
 	// HTTP(S) URL of a VyOS qcow2/raw disk image. Used only when `enabled` is true.
 	// +kubebuilder:default:=""
 	Url string `json:"url,omitempty"`

@@ -1,8 +1,8 @@
 # KubeVirt containerDisk wrapping the built VyOS router qcow2.
 #
 # `FROM scratch` + the disk at /disk/ is the KubeVirt containerDisk convention;
-# CDI's `source.registry` importer (used by the vm-default-images vyos-router
-# entry) extracts the disk from /disk/. Publishing the qcow2 as an OCI image this
+# CDI's `source.registry` importer (used by this package's golden DataVolume in
+# ../../templates/dv.yaml) extracts the disk from /disk/. Publishing the qcow2 as an OCI image this
 # way — rather than a bare `oras` blob like the Talos nocloud disk — is what makes
 # it CDI-consumable AND digest-pinnable (a plain HTTP import cannot verify a
 # sha256). The build context is the repo root (see the Makefile), so the qcow2 is

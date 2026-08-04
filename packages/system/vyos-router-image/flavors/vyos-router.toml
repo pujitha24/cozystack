@@ -77,10 +77,10 @@
 # Produce a qcow2 disk (build-vyos-image runs `qemu-img convert -f raw -O qcow2`).
 image_format = ["qcow2"]
 
-# Virtual disk size (GiB). Matches the 12Gi CDI import headroom the site-router
-# boot DataVolume requests (packages/apps/site-router/templates/dv.yaml) and the
-# vm-default-images vyos-router entry — a qcow2 is sparse, so the on-registry
-# artifact stays ~1 GiB regardless.
+# Virtual disk size (GiB). Matches the 12Gi CDI import headroom requested by both
+# the golden DataVolume (../templates/dv.yaml) and the site-router boot disk that
+# clones it (packages/apps/site-router/templates/dv.yaml) — a qcow2 is sparse, so
+# the on-registry artifact stays ~1 GiB regardless.
 disk_size = 10
 
 # cloud-init: pulls VyOS's forked cloud-init from the rolling mirror (see the

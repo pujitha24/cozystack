@@ -1,10 +1,66 @@
 {{- /*
-  CDI DataVolume for the router boot disk. Default: clone the cozystack-owned
-  VyOS golden image PVC (cozy-public/vm-default-images-<image.name>), matching
-  the vm-disk PVC-clone pattern. Override: import over HTTP from image.url when
-  image.enabled is true (used when no golden image is committed). storageClass
-  is pinned to `replicated` (DRBD/LINSTOR) so the boot disk stays migratable.
+  CDI DataVolume for the router boot disk.
+
+  Default: a CDI clone of the shared golden VyOS appliance image in cozy-public,
+  provisioned by packages/system/vyos-router-image and shipped alongside this app
+  by the naas bundle. Cloning a golden is one registry import per cluster instead
+  of one per gateway, and mirrors the Talos worker golden in
+  packages/system/kubernetes-worker-image.
+
+  Override: import over HTTP from image.url when image.enabled is true — an escape
+  hatch for an operator-hosted appliance disk, which skips the golden entirely.
+
+  storageClass is pinned to `replicated` (DRBD/LINSTOR) so the boot disk stays
+  live-migratable.
 */ -}}
+{{- $goldenNamespace := "cozy-public" }}
+{{- /*
+  Stable name — keep in sync with the DataVolume name in
+  packages/system/vyos-router-image/templates/dv.yaml.
+*/ -}}
+{{- $goldenName := "vyos-router" }}
+{{- $storageClass := "replicated" }}
+{{- if not .Values.image.enabled }}
+{{- /*
+  Guards on the golden this disk clones. Every one is conditional on the golden
+  having been FOUND, because lookup() returns nothing both on a cluster that has
+  no golden and under a clusterless `helm template` — the two are
+  indistinguishable here. Since cloning is the default path, failing on a
+  not-found golden would make every offline render of this chart fail (chart lint,
+  helm-unittest, `helm template`), so absence is deliberately not a render error.
+
+  Absence is instead surfaced at the layer that can actually tell the difference:
+  the controller reads the live boot DataVolume and reports a BootImageUnavailable
+  Warning Event + Ready=False when its clone source is missing (see
+  internal/controller/siterouter/status.go). What stays here are the two states a
+  found golden can be in that no amount of waiting fixes.
+*/ -}}
+{{- $golden := lookup "cdi.kubevirt.io/v1beta1" "DataVolume" $goldenNamespace $goldenName }}
+{{- if $golden }}
+{{- /*
+  Fail only on the golden's terminal phase, never on "not yet Succeeded". A golden
+  mid-import is transient: CDI holds this DataVolume until the source populates,
+  which is correct and recovers unattended. Hard-failing there would abort the
+  ENTIRE HelmRelease of every SiteRouter instance for the length of an import.
+  Only Failed, which never recovers without operator action, justifies that.
+*/ -}}
+{{-   $goldenPhase := dig "status" "phase" "" $golden | toString }}
+{{-   if eq $goldenPhase "Failed" }}
+{{-     fail (printf "golden DataVolume %s/%s failed to import (phase Failed): cloning it would leave this gateway's boot disk pending indefinitely. Check the importer pod in %s, then delete the DataVolume to retry the import." $goldenNamespace $goldenName $goldenNamespace) }}
+{{-   end }}
+{{- /*
+  CDI takes the storage-layer clone path only when source and target share a
+  StorageClass; across classes it silently falls back to a host-assisted copy over
+  the pod network — the per-gateway network transfer the golden exists to avoid.
+  Reject the case we can prove; an empty golden StorageClass means "cluster
+  default", which is not resolvable at render time, so skip rather than guess.
+*/ -}}
+{{-   $goldenSC := dig "spec" "storage" "storageClassName" "" $golden | toString }}
+{{-   if and $goldenSC (ne $goldenSC $storageClass) }}
+{{-     fail (printf "golden DataVolume %s/%s is on StorageClass %q but the boot disk is pinned to %q — CDI cannot clone across StorageClasses and would fall back to a host-assisted copy over the pod network. Set the vyos-router-image package's storageClass to %q." $goldenNamespace $goldenName $goldenSC $storageClass $storageClass) }}
+{{-   end }}
+{{- end }}
+{{- end }}
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
@@ -19,8 +75,8 @@ spec:
       url: {{ required "image.url is required when image.enabled is true" .Values.image.url }}
     {{- else }}
     pvc:
-      name: vm-default-images-{{ required "image.name is required" .Values.image.name }}
-      namespace: cozy-public
+      name: {{ $goldenName }}
+      namespace: {{ $goldenNamespace }}
     {{- end }}
   storage:
     resources:
@@ -29,6 +85,7 @@ spec:
         # filesystem-import scratch needs the decompressed image plus ~5.5%
         # filesystem overhead, so a request equal to the virtual size fails the
         # import with "virtual image size larger than reported available
-        # storage" (validated live on VyOS 1.5-rolling). The headroom absorbs it.
+        # storage" (validated live on VyOS 1.5-rolling). The headroom absorbs it,
+        # and a clone target can never be smaller than its source.
         storage: 12Gi
-    storageClassName: replicated
+    storageClassName: {{ $storageClass }}

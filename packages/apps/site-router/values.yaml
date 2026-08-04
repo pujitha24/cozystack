@@ -84,14 +84,12 @@ resources:
 ## @section Image and low-level materialization
 ##
 
-## @typedef {struct} Image - Boot-disk image source for the router VM.
-## @field {string} name - Golden image name in cozy-public. Cloned as the boot disk from PVC vm-default-images-<name> unless `enabled` is true.
-## @field {bool} enabled - Import the boot disk over HTTP from `url` instead of cloning the golden-image PVC.
+## @typedef {struct} Image - Boot-disk image source override for the router VM.
+## @field {bool} enabled - Import the boot disk over HTTP from `url` instead of cloning the platform's golden VyOS appliance image.
 ## @field {string} [url] - HTTP(S) URL of a VyOS qcow2/raw disk image. Used only when `enabled` is true.
 
-## @param {Image} image - Boot-disk image source for the router VM.
+## @param {Image} image - Boot-disk image source override for the router VM. By default the boot disk is a CDI clone of the platform's golden VyOS appliance image (`cozy-public/vyos-router`, provisioned by the `vyos-router-image` package and shipped with site-router), so one registry import per cluster is shared by every gateway. This override exists only to point an installation at an operator-hosted appliance disk instead.
 image:
-  name: vyos-router
   enabled: false
   url: ""
 

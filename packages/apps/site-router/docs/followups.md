@@ -4,8 +4,8 @@ This is the consolidated list of work surfaced during the Phase-1 `site-router` 
 
 ## Image and build
 
-- **Reproducible in-repo VyOS build (landed).** The pipeline is implemented in `packages/system/vyos-router-image` (pinned `vyos-build` flavor + containerDisk Makefile), wired into CI as the `build-vyos` job, and consumed by the now-enabled `vyos-router` entry in `packages/system/vm-default-images/values.yaml` (a digest-pinned OCI containerDisk via CDI's registry importer, digest stamped into `images/vyos-router-disk.tag`). See `docs/image-lifecycle.md`.
-- **Publish + validate the golden image (maintainer action).** Two things still require a CI run (a gated push): letting `build-vyos` publish the containerDisk to GHCR and stamp the real digest into the committed placeholder `.tag`, and the empirical boot-conformance proof against a real gateway (cloud-init applies the seed, the HTTPS `/configure` REST answers, eth0 DHCPs, nginx serves :443, the firewall seed applies) — the deferred site-router e2e covers the latter once the image is published.
+- **Reproducible in-repo VyOS build (landed).** The pipeline is implemented in `packages/system/vyos-router-image` (pinned `vyos-build` flavor + containerDisk Makefile), wired into CI as the `build-vyos` job. That same package ships the appliance as the golden `cozy-public/vyos-router` `DataVolume` every gateway boot disk clones — a digest-pinned OCI containerDisk via CDI's registry importer, digest stamped into its own `images/vyos-router-disk.tag`. See `docs/image-lifecycle.md`.
+- **Validate the golden image on a booted gateway (maintainer action).** The empirical boot-conformance proof against a real gateway — cloud-init applies the seed, the HTTPS `/configure` REST answers, eth0 DHCPs, nginx serves :443, the firewall seed applies — which the deferred site-router e2e covers once the image is published. Publishing the containerDisk and committing its real digest is a merge prerequisite rather than a follow-up: a placeholder digest is a reference that resolves nowhere while looking like a valid pin.
 
 ## Security hardening
 
