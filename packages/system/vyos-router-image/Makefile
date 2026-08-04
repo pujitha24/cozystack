@@ -12,9 +12,21 @@ NAMESPACE=cozy-system
 # (.github/renovate.json) — nothing else can see a pin held in a Makefile
 # variable, so without them these would age silently. VYOS_VERSION is a rolling
 # snapshot label with no upstream release feed to watch and stays a manual bump.
+#
+# VYOS_BUILD_REF CANNOT be left to age. It selects the kernel the live-build asks
+# for (data/defaults.toml `kernel_version`), and the rolling mirror carries only
+# the current one — so a ref that has fallen behind fails with
+# `E: Package 'linux-image-<old>-vyos' has no installation candidate` rather than
+# building something stale. That is not a flake to retry: the pin has to move.
+# Verify a bump before trusting it by comparing the ref's kernel_version against
+# what the mirror actually serves:
+#   gh api repos/vyos/vyos-build/contents/data/defaults.toml?ref=<ref> \
+#     --jq .content | base64 -d | grep kernel_version
+#   curl -fsSL https://packages.vyos.net/repositories/rolling/dists/rolling/main/binary-amd64/Packages.gz \
+#     | gunzip | grep -oE '^Package: linux-image-[0-9.]+-vyos$' | sort -u
 VYOS_BUILD_IMAGE = vyos/vyos-build:current@sha256:77b88166bb9dfb2fdef4f870064e579a1e33247a52c03a12c1703bf9b854a4c5
-VYOS_BUILD_REF   = 51ee73ec541b6e28ee430607ab93665ca8c13a93
-VYOS_VERSION     = 1.5-rolling-20260720
+VYOS_BUILD_REF   = 6dea44971db1addc73682f3a82add133bcaee2de
+VYOS_VERSION     = 1.5-rolling-20260802
 VYOS_ARCH        = amd64
 
 include ../../../hack/common-envs.mk
