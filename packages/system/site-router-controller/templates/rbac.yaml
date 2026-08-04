@@ -18,25 +18,36 @@ rules:
   verbs: ["get", "list", "watch", "patch"]
 # Program the kube-ovn return routes: the controller patches
 # ovn.kubernetes.io/routes on the tenant namespace and the kube-ovn webhook
-# propagates it to pods (T07).
+# propagates it to pods (T07). Namespaces are read one at a time through the
+# uncached reader and are not in CacheByObject, so list/watch is not granted;
+# `patch` must stay cluster-wide because tenant namespaces are created
+# dynamically and RBAC cannot scope a verb by label or name pattern.
 - apiGroups: [""]
   resources: ["namespaces"]
-  verbs: ["get", "list", "watch", "patch"]
+  verbs: ["get", "patch"]
 # Read the per-instance PSK / api-key Secrets (VyOS HTTPS API token) and the
-# tunnel LoadBalancer Service (external address); read-only.
+# tunnel LoadBalancer Service (external address).
+#
+# `get` ONLY, deliberately. Both are read one object at a time through the
+# uncached APIReader (readTunnelLBAddress, readPushSecrets) and neither is in
+# CacheByObject, so list/watch would grant nothing the controller uses — and on
+# Secrets specifically a cluster-wide `list` returns object CONTENTS, turning an
+# unused verb into a cross-tenant credential-exfiltration surface. Keep it off.
 - apiGroups: [""]
   resources: ["secrets", "services"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["get"]
 # Read the gateway VirtualMachineInstance for NIC MAC discovery (resolving the
 # kernel device the tunnel/source-filter bind to); a single get, best-effort.
 - apiGroups: ["kubevirt.io"]
   resources: ["virtualmachineinstances"]
   verbs: ["get"]
 # Read the cozy-system/cozystack ConfigMap for the cluster network CIDRs used by
-# the remote-CIDR deny-set validation; read-only.
+# the remote-CIDR deny-set validation. `get` only — a single uncached read of one
+# well-known object; see the Secret/Service rule above for why the unused
+# list/watch is not granted.
 - apiGroups: [""]
   resources: ["configmaps"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["get"]
 # Leader election (--leader-elect).
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
@@ -44,3 +55,20 @@ rules:
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
+---
+{{- /*
+  Namespaced, not a ClusterRole rule: the golden appliance DataVolume every
+  gateway boot disk clones lives at exactly one address (cozy-public/vyos-router),
+  so the grant to read it is expressible at namespace scope and belongs there. The
+  controller uses it to report BootImageUnavailable when an instance's clone source
+  is missing — the one absence a chart render cannot distinguish from "no cluster".
+*/ -}}
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: apps.cozystack.io:site-router-controller:golden-image
+  namespace: cozy-public
+rules:
+- apiGroups: ["cdi.kubevirt.io"]
+  resources: ["datavolumes"]
+  verbs: ["get"]

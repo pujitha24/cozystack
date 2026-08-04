@@ -87,6 +87,12 @@ const (
 	// identity (the pod IP) that no remote peer can authenticate, so the controller
 	// requeues (the Service watch — via the pod/HelmRelease reconcile — re-triggers).
 	reasonTunnelAddressPending = "TunnelAddressPending"
+
+	// reasonBGPLocalASNInvalid marks an instance that asked for BGP without a usable
+	// local ASN. The render skips BGP entirely in that case, which is otherwise
+	// indistinguishable from "BGP was never requested" — the instance stays Ready
+	// with a feature the tenant enabled quietly absent.
+	reasonBGPLocalASNInvalid = "BGPLocalASNInvalid"
 )
 
 // Secret key/name conventions the chart writes (T04/D6).
@@ -589,10 +595,18 @@ func (r *SiteRouterReconciler) resolveInputs(ctx context.Context, inst *instance
 			in.BGP = cfg
 		} else {
 			// bgp.enabled but no valid local ASN: the schema (minimum/maximum)
-			// rejects this at admission; guard the reconcile path against a stale or
-			// hand-crafted HelmRelease so the render never emits `system-as 0`.
+			// rejects an out-of-range value at admission, but localASN is OPTIONAL
+			// there, so `bgp: {enabled: true}` with no localASN at all is a valid
+			// document that reaches here. Guard the reconcile path so the render never
+			// emits `system-as 0` — and say so out loud, because silently dropping a
+			// feature the tenant switched on while the instance stays Ready is exactly
+			// the kind of no-op nobody debugs.
 			log.FromContext(ctx).Info("skipping BGP: bgp.enabled but localASN is missing or outside the valid range (1..4294967295)",
 				"instance", inst.name, "namespace", inst.namespace, "localASN", localASN)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(inst.hr, corev1.EventTypeWarning, reasonBGPLocalASNInvalid,
+					"BGP is enabled but bgp.localASN is missing or outside the valid range (1..4294967295), so no BGP configuration is pushed to the gateway. Set bgp.localASN to this side's ASN, or set bgp.enabled=false.")
+			}
 		}
 	}
 

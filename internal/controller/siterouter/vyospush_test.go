@@ -774,7 +774,7 @@ func TestReconcile_BGPEnabledWithoutValidASN_SkipsBGP(t *testing.T) {
 		retrieveResult:  json.RawMessage(`{"rule":{"5":{"action":"accept"}}}`),
 		ethObservations: []vyos.EthernetObservation{{Device: "eth0", MAC: "52:54:00:00:00:01"}},
 	}
-	r, _ := newVyOSReconciler(t, fakeV, readyObjects(t, "demo", values, "10.244.0.5")...)
+	r, rec := newVyOSReconciler(t, fakeV, readyObjects(t, "demo", values, "10.244.0.5")...)
 
 	reconcileInstance(t, r, "demo")
 
@@ -787,6 +787,14 @@ func TestReconcile_BGPEnabledWithoutValidASN_SkipsBGP(t *testing.T) {
 	}
 	if opsHave(ops, "protocols/bgp/neighbor/203.0.113.1/remote-as", "") {
 		t.Errorf("no BGP neighbor should be rendered when localASN is invalid, ops: %+v", ops)
+	}
+	// Skipping silently is the actual hazard: localASN is OPTIONAL in the schema, so
+	// `bgp: {enabled: true}` with no localASN is a valid document, and the instance
+	// would otherwise stay Ready with the feature the tenant switched on quietly
+	// absent. Say it out loud.
+	if !hasEventReason(rec, reasonBGPLocalASNInvalid) {
+		t.Errorf("expected a %q Warning event; dropping BGP with no signal is a silent no-op, events: %+v",
+			reasonBGPLocalASNInvalid, recordedEvents(rec))
 	}
 }
 

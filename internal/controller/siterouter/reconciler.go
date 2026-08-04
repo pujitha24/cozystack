@@ -221,11 +221,21 @@ type instance struct {
 	configuredBGPPeers    []string
 }
 
+// These markers are documentation that must be kept in sync BY HAND with the
+// chart-authored role in packages/system/site-router-controller/templates/rbac.yaml
+// — there is no config/rbac generated from them. Only HelmReleases and Pods carry
+// list/watch: they are the two kinds in CacheByObject, and Pods are additionally
+// listed directly (surfacePendingRoutePods). Everything else is read one object at
+// a time through the uncached reader, so granting list there would add no
+// capability the controller uses while widening what a compromise could read — on
+// Secrets a cluster-wide list returns contents.
+//
 // +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups="",resources=services;secrets;configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;patch
+// +kubebuilder:rbac:groups="",resources=services;secrets;configmaps,verbs=get
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get
+// +kubebuilder:rbac:groups=cdi.kubevirt.io,namespace=cozy-public,resources=datavolumes,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 
@@ -396,11 +406,20 @@ func (r *SiteRouterReconciler) reconcileDelete(ctx context.Context, inst *instan
 
 // validateRemoteCIDRs rejects an instance whose tunnel remoteCIDRs overlap the
 // cluster pod/service/join/node/link-local/LB-pool networks (the deny-set). The
-// deny-set check is a pure helper shared with the admission plugin (D9/D10). A
-// violation returns a reconcileError carrying reason denyset.ReasonInvalidRemoteCIDR
-// and a message naming every offender and its colliding network, so T09/status
-// surfaces it machine-readably and the route is never programmed (this runs
+// deny-set check is a pure helper shared with the admission plugin (D9/D10).
+//
+// A violation records a Warning Event naming every offender and its colliding
+// network, then returns a reconcileError carrying reason
+// denyset.ReasonInvalidRemoteCIDR, so the route is never programmed (this runs
 // before programNamespaceRoutes in the pipeline).
+//
+// The Event is the whole surface, and it is load-bearing: the returned error is a
+// HARD error, so classify stops the pipeline before updateStatus ever runs. The
+// primary tenant path is synchronous fail-closed admission, which rejects the
+// value at apply time — but a CIDR that becomes invalid later (a cluster network
+// reconfigure), or an apply that bypassed admission, reaches only this path, and
+// the instance's HelmRelease stays Ready while its routes are silently not
+// programmed. Without the Event that state has no explanation anywhere.
 func (r *SiteRouterReconciler) validateRemoteCIDRs(ctx context.Context, inst *instance) error {
 	cidrs := stringSlice(inst.values[remoteCIDRsValueKey])
 	if len(cidrs) == 0 {
@@ -418,7 +437,12 @@ func (r *SiteRouterReconciler) validateRemoteCIDRs(ctx context.Context, inst *in
 	for _, rej := range rejections {
 		msgs = append(msgs, rej.Message())
 	}
-	return &reconcileError{reason: denyset.ReasonInvalidRemoteCIDR, message: strings.Join(msgs, "; ")}
+	msg := strings.Join(msgs, "; ")
+	if r.Recorder != nil {
+		r.Recorder.Event(inst.hr, corev1.EventTypeWarning, denyset.ReasonInvalidRemoteCIDR,
+			"remote CIDRs rejected; no route is programmed for this instance: "+truncMsg(msg))
+	}
+	return &reconcileError{reason: denyset.ReasonInvalidRemoteCIDR, message: msg}
 }
 
 // programNamespaceRoutes writes the ovn.kubernetes.io/routes annotation on the
@@ -803,8 +827,19 @@ func ValidateManagementCIDR(managementCIDR string, allowOpenManagement bool) err
 			"is otherwise reachable from anything that can route to the gateway VM; " +
 			"pass --allow-open-management to opt out in a test environment")
 	}
-	if _, _, err := net.ParseCIDR(managementCIDR); err != nil {
+	ip, _, err := net.ParseCIDR(managementCIDR)
+	if err != nil {
 		return fmt.Errorf("--management-cidr %q is not a valid CIDR: %w", managementCIDR, err)
+	}
+	// IPv4 only. The value becomes a source match in the guest's `firewall ipv4`
+	// management rule, so an IPv6 CIDR parses fine here and then produces a rule
+	// that can never match the real controller source — the controller would start
+	// and lock itself out of every gateway it manages. The chart's managementCIDR
+	// pattern is IPv4-only for the same reason; reject it at the flag too rather
+	// than let the two disagree.
+	if ip.To4() == nil {
+		return fmt.Errorf("--management-cidr %q is IPv6: the VyOS management firewall rule is IPv4-only, "+
+			"so an IPv6 range would never match the controller source", managementCIDR)
 	}
 	return nil
 }

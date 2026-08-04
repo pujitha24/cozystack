@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -65,6 +66,28 @@ func TestValidateManagementCIDR(t *testing.T) {
 			managementCIDR: "10.244.0.1",
 			allowOpen:      false,
 			wantErr:        true,
+		},
+		// The value becomes a source match in the guest's `firewall ipv4` management
+		// rule, so an IPv6 range parses as a CIDR and then yields a rule that can
+		// never match the controller — the controller would start and lock itself out
+		// of every gateway. The chart's pattern is IPv4-only; the flag must agree.
+		{
+			name:           "IPv6 CIDR is rejected (the firewall rule is IPv4-only)",
+			managementCIDR: "2001:db8::/64",
+			allowOpen:      false,
+			wantErr:        true,
+		},
+		{
+			name:           "IPv6 CIDR is rejected regardless of allow-open",
+			managementCIDR: "fd00::/8",
+			allowOpen:      true,
+			wantErr:        true,
+		},
+		{
+			name:           "IPv4-in-IPv6 notation is accepted (it is a v4 range)",
+			managementCIDR: "::ffff:10.244.0.0/112",
+			allowOpen:      false,
+			wantErr:        false,
 		},
 	}
 	for _, tt := range tests {
@@ -337,5 +360,51 @@ func TestReconcile_FinalizerRestoresStateOnDelete(t *testing.T) {
 	}
 	if ann := gotNS.Annotations[routesAnnotation]; strings.Contains(ann, "172.31.0.0/16") {
 		t.Errorf("instance route entry must be removed on delete, namespace still has %s=%q", routesAnnotation, ann)
+	}
+}
+
+// TestValidateRemoteCIDRs_RecordsWarningEvent covers the only surface a deny-set
+// rejection has on the reconcile path. The returned error is a HARD error, so
+// classify stops the pipeline before updateStatus ever runs — there is no condition
+// and no status write. The primary tenant path is synchronous fail-closed
+// admission, but a CIDR that becomes invalid later (a cluster network reconfigure)
+// or an apply that bypassed admission reaches only here, leaving the HelmRelease
+// Ready while routes are silently not programmed. The Event is the explanation.
+func TestValidateRemoteCIDRs_RecordsWarningEvent(t *testing.T) {
+	hr := siteRouterHRWithValues(t, "demo", map[string]interface{}{
+		"remoteCIDRs": []interface{}{"10.244.7.0/24"}, // overlaps pod 10.244.0.0/16
+	})
+	r := newTestReconciler(t, hr, cozystackConfigMap())
+	rec := record.NewFakeRecorder(16)
+	r.Recorder = rec
+
+	inst := &instance{
+		hr:        hr,
+		name:      "demo",
+		namespace: "tenant-test",
+		values:    map[string]interface{}{"remoteCIDRs": []interface{}{"10.244.7.0/24"}},
+	}
+	err := r.validateRemoteCIDRs(context.Background(), inst)
+	if err == nil {
+		t.Fatalf("expected deny-set rejection, got nil")
+	}
+
+	// Drain the recorder ONCE: recordedEvents and hasEventReason both consume the
+	// channel, so calling them in sequence would find an empty second read.
+	events := recordedEvents(rec)
+	var found string
+	for _, e := range events {
+		if strings.Contains(e, denyset.ReasonInvalidRemoteCIDR) {
+			found = e
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected a %q Warning event, got %+v", denyset.ReasonInvalidRemoteCIDR, events)
+	}
+	if !strings.Contains(found, "10.244.7.0/24") {
+		t.Errorf("event %q should name the offending CIDR 10.244.7.0/24", found)
+	}
+	if !strings.Contains(found, "Warning") {
+		t.Errorf("event %q should be a Warning, not Normal", found)
 	}
 }
