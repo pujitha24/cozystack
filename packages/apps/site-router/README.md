@@ -74,11 +74,11 @@ remoteCIDRs:
 
 ### Common parameters
 
-| Name               | Description                                                                                                                                                                   | Type       | Value |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----- |
-| `resources`        | Explicit CPU and memory sizing for the router VM.                                                                                                                             | `object`   | `{}`  |
-| `resources.cpu`    | CPU topology cores allocated to the router VM. Whole cores only; a fractional quantity (e.g. "1500m", "0.5") is rejected at admission rather than silently truncated to zero. | `int`      | `2`   |
-| `resources.memory` | Memory (RAM) allocated to the router VM.                                                                                                                                      | `quantity` | `2Gi` |
+| Name               | Description                                                                                                                                                                                                                                                                                          | Type       | Value |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----- |
+| `resources`        | Explicit CPU and memory sizing for the router VM.                                                                                                                                                                                                                                                    | `object`   | `{}`  |
+| `resources.cpu`    | CPU topology cores allocated to the router VM. Whole cores only; a fractional quantity (e.g. "1500m", "0.5") is rejected at admission rather than silently truncated to zero. At least one core: `cpu: 0` and negative values otherwise pass admission and render an unusable KubeVirt CPU topology. | `int`      | `2`   |
+| `resources.memory` | Memory (RAM) allocated to the router VM.                                                                                                                                                                                                                                                             | `quantity` | `2Gi` |
 
 
 ### Image and low-level materialization

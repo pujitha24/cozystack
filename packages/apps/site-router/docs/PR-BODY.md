@@ -33,7 +33,7 @@ Status legend: **done** = implemented and unit-tested in this PR; **deferred-to-
 | 5 | Controller mediation: deny-set, namespace routes, gateway-only `port_security` relax, source filter, status, delete-restore | done (unit-tested; the kube-ovn v1.15.10 live-toggle no-op was confirmed, so the relaxation is baked at pod creation and D8 is a status/progression gate — documented in security-model.md) |
 | 6 | Security guards: source allow-list, Cilium `egressDeny` (169.254 + mgmt), forward default-deny, two-boundary API isolation, api-key not tenant-readable | done (unit-tested; VyOS 1.5 firewall syntax validated live) / follow-up (Boundary-B additive-ingress residual) |
 | 7 | Tunnel-state observability (SA up/down, rekey, counters) | done (up/down + BGP gauges) / follow-up (byte + rekey counters need a guest-command + parser change) |
-| 8 | Negative-security acceptance suite passes (undeclared source / other tenant / node / API / metadata / mgmt-API / world dropped; declared source → tenant dest passes, source preserved) | deferred-to-empirical (the e2e gate; blocked on the published golden image for a live run) |
+| 8 | Negative-security acceptance suite — authored, NOT yet executed (undeclared source / other tenant / node / API / metadata / mgmt-API / world dropped; declared source → tenant dest passes, source preserved) | deferred-to-empirical (the e2e gate; committed and excluded from CI via `DEFERRED_SUITES`, so it has **zero executed evidence of a packet drop** — blocked on the published appliance image for a live run) |
 | 9 | helm-unittest + Go unit + Chainsaw e2e (two-VM) green in CI | done (helm-unittest + Go unit) / deferred-to-empirical (Chainsaw e2e suite committed but deferred from CI until the VyOS golden image ships; live two-VM run) |
 
 The negative-security suite (item 8) is the Phase-1 acceptance gate and is authored as a Chainsaw e2e; its **live** run against a real two-VM topology is blocked on the published cozystack-owned VyOS golden image (see follow-ups). The VyOS-version-specific firewall leaf syntax has been validated live against the shipped image (the `firewall ipv4 …` family and the `ipsec match-ipsec-in`/`match-none-in` matchers) and is kept behind single-point helpers so a future image whose syntax differs is a one-place change; what the e2e still adds is the runtime proof that the guarded packets are actually dropped.
@@ -42,8 +42,7 @@ The negative-security suite (item 8) is the Phase-1 acceptance gate and is autho
 
 Full detail in `packages/apps/site-router/docs/followups.md`. Consolidated list:
 
-- Publish the cozystack-owned VyOS golden image (unblocks the default install + the e2e/empirical run).
-- Reproducible in-repo VyOS build (pin snapshot, `vyos-build`, publish like the Talos image; then pin URL + `@sha256`).
+- Publish the cozystack-owned VyOS appliance image (unblocks the e2e/empirical run). Committing its real digest is a merge prerequisite, not a follow-up.
 - Negative-security e2e runtime proof (the VyOS 1.5 syntax is validated live; the e2e still proves at runtime that an undeclared-source packet and a valid-source/world-destination packet are both dropped).
 - Scoped `port_security` (pending upstream kube-ovn CIDR-AAP support).
 - Tenant-baseline Cilium exclusion for the gateway (Boundary-B hardening).

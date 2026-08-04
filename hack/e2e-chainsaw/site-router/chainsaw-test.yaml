@@ -575,6 +575,25 @@ spec:
                 -o jsonpath='{range .items[*]}{.status.podIP}{" "}{.status.hostIP}{" "}{.metadata.namespace}{"\n"}{end}' \
                 | awk -v ns="$NAMESPACE" '$1!="" && $1!=$2 && $3!=ns {print $1; exit}')
 
+              # Every target must have resolved before a single probe runs. An empty
+              # destination would make assert_dropped report a drop for the WRONG
+              # reason — nothing was reachable because there was nothing to reach —
+              # and a "dropped" verdict that does not attribute to its guard silently
+              # voids the gate this whole step exists to be. The establish-tunnel step
+              # guards B_IP/A_TUNNEL the same way; name every missing one at once so a
+              # broken fixture takes one run to diagnose, not five.
+              missing=
+              for pair in "GW_IP=$GW_IP" "BACKEND_IP=$BACKEND_IP" "NODE_IP=$NODE_IP" \
+                          "API_CLUSTERIP=$API_CLUSTERIP" "OTHER_POD_IP=$OTHER_POD_IP"; do
+                case "$pair" in
+                  *=) missing="$missing ${pair%=}" ;;
+                esac
+              done
+              if [ -n "$missing" ]; then
+                echo "could not resolve negative-security probe target(s):$missing"
+                exit 1
+              fi
+
               # ── DROP cases: <desc> <guard-check> <proto> <dst> [port] ─────────
               # 1. Source OUTSIDE remoteCIDRs → rejected at A's IPsec SA traffic
               #    selector. A's negotiated remote TS is remoteCIDRs (192.0.2.0/24),

@@ -34,11 +34,13 @@ all_apps=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.ya
 # leaving the dependency-graph logic untouched. Run a deferred suite by hand:
 #   make test-chainsaw CHAINSAW_SUITES="<name>"
 #
-# TODO: enable TIA selection of `site-router` once the VyOS golden image is
-# published (uncomment the vyos-router entry in packages/system/vm-images) and
-# the VyOS 1.5 firewall syntax is validated by the T13 empirical run — then
-# delete it from DEFERRED_SUITES. The src_to_suites mapping below is already
-# correct and needs no change at that point.
+# TODO: enable TIA selection of `site-router` once the VyOS appliance image is
+# published — i.e. once a build has stamped a real digest into
+# packages/system/vyos-router-image/images/vyos-router-disk.tag, which is what the
+# golden DataVolume that suite's gateways clone is imported from — and the VyOS 1.5
+# firewall syntax is validated by the T13 empirical run. Then delete it from
+# DEFERRED_SUITES. The src_to_suites mapping below is already correct and needs no
+# change at that point.
 DEFERRED_SUITES="site-router"
 
 # strip_deferred removes DEFERRED_SUITES entries from a space-separated suite
