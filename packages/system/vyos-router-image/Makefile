@@ -7,6 +7,11 @@ NAMESPACE=cozy-system
 # best-effort reproducible, not bit-identical. Bump these deliberately: the image
 # and the site-router cloud-init contract advance atomically (see
 # packages/apps/site-router/docs/image-lifecycle.md).
+#
+# VYOS_BUILD_IMAGE and VYOS_BUILD_REF are tracked by Renovate custom managers
+# (.github/renovate.json) — nothing else can see a pin held in a Makefile
+# variable, so without them these would age silently. VYOS_VERSION is a rolling
+# snapshot label with no upstream release feed to watch and stays a manual bump.
 VYOS_BUILD_IMAGE = vyos/vyos-build:current@sha256:77b88166bb9dfb2fdef4f870064e579a1e33247a52c03a12c1703bf9b854a4c5
 VYOS_BUILD_REF   = 51ee73ec541b6e28ee430607ab93665ca8c13a93
 VYOS_VERSION     = 1.5-rolling-20260720
@@ -47,4 +52,7 @@ qcow2:
 		VYOS_ARCH="$(VYOS_ARCH)" \
 		hack/build-qcow2.sh
 
-update: ;
+# No vendored upstream chart to pull. The build-input pins this package does carry
+# are refreshed by Renovate, not by `make update` (see the header above).
+update:
+	@echo "Nothing to update: VyOS build pins are Renovate-managed"
