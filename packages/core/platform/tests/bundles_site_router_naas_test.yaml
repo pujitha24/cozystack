@@ -21,6 +21,11 @@ tests:
     set:
       bundles:
         system:
+          # Explicit: main's naas.yaml fails when bundles.system.enabled is falsy
+          # (the naas catalog needs the system bundle's control-plane packages),
+          # and a `set:` block replaces the bundles.system map rather than merging
+          # into the chart defaults — so omitting it renders as disabled.
+          enabled: true
           variant: isp-full
         naas:
           enabled: true
@@ -46,6 +51,11 @@ tests:
     set:
       bundles:
         system:
+          # Explicit: main's naas.yaml fails when bundles.system.enabled is falsy
+          # (the naas catalog needs the system bundle's control-plane packages),
+          # and a `set:` block replaces the bundles.system map rather than merging
+          # into the chart defaults — so omitting it renders as disabled.
+          enabled: true
           variant: isp-full
         naas:
           enabled: true
@@ -69,6 +79,11 @@ tests:
     set:
       bundles:
         system:
+          # Explicit: main's naas.yaml fails when bundles.system.enabled is falsy
+          # (the naas catalog needs the system bundle's control-plane packages),
+          # and a `set:` block replaces the bundles.system map rather than merging
+          # into the chart defaults — so omitting it renders as disabled.
+          enabled: true
           variant: isp-full
         naas:
           enabled: false
@@ -90,6 +105,11 @@ tests:
     set:
       bundles:
         system:
+          # Explicit: main's naas.yaml fails when bundles.system.enabled is falsy
+          # (the naas catalog needs the system bundle's control-plane packages),
+          # and a `set:` block replaces the bundles.system map rather than merging
+          # into the chart defaults — so omitting it renders as disabled.
+          enabled: true
           variant: isp-full
         naas:
           enabled: true
