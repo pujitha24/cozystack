@@ -133,6 +133,26 @@ code_lines() {
   [ "${count:-0}" -eq 1 ]
 }
 
+@test "a labeled event does not cancel the run in flight for the same PR" {
+  # A run joins its concurrency group BEFORE any job-level `if` is evaluated, so
+  # the full-e2e guards pinned above cannot keep a label event from cancelling
+  # the run already testing this head SHA — they only decide what the label run
+  # does after the damage. Labels set with the default GITHUB_TOKEN start no run,
+  # but labels set by third-party GitHub Apps do, and they arrive in bursts. The
+  # end state is a PR whose every job is SKIPPED, which branch protection accepts
+  # as satisfied, so it can merge having run no CI at all. This expression is the
+  # whole of what prevents that, and `cancel-in-progress: true` is the obvious
+  # thing for the next reader to normalise it back to.
+  #
+  # The full-e2e arm is pinned with it rather than separately. It is the one
+  # label that launches work instead of skipping, so it must keep superseding
+  # the scoped run it replaces; dropping just that arm would leave the opt-in
+  # waiting behind a run it was added to replace, with the rest of the pin
+  # still green.
+  count="$(code_lines < "$PULL_REQUESTS" | grep -cF "  cancel-in-progress: \${{ github.event.action != 'labeled' || github.event.label.name == 'full-e2e' }}" || true)"
+  [ "${count:-0}" -eq 1 ]
+}
+
 # ── promote-time website docs contract ──────────────────────────────────────
 # The website "update managed apps reference" PR is opened at PROMOTE time from
 # the staging branch (via FETCH_REF) instead of only at tag time. These pins are

@@ -8,12 +8,43 @@ on:
     # `labeled` makes the promote PR's manual full-e2e opt-in actionable after
     # the bot opens it. The plan/resolve guards below discard every other label
     # event before it can launch build or E2E work.
+    #
+    # Discarding the work is only half of it: a labeled run that is going to
+    # skip every job must also not cancel the run in flight for the head SHA,
+    # hence the cancel-in-progress expression below. Labels set with the default
+    # GITHUB_TOKEN start no run, but labels set by third-party GitHub Apps do,
+    # and such a run used to cancel the real one and then skip every job itself.
+    # A PR whose jobs are all SKIPPED reads as satisfied to branch protection,
+    # so it looked mergeable with no CI behind it. What the expression closes is
+    # the cancellation, and only that: the label run still reports its skips onto
+    # the head SHA, and a required check resolves to the NEWEST run of that name,
+    # so a skip can still mask a red run. Closing that too means taking the
+    # opt-in off this trigger, which is a larger change than this one.
     types: [opened, synchronize, reopened, labeled]
 
-# Cancel in‑flight runs for the same PR when a new push arrives.
+# Cancel in‑flight runs for the same PR when a new push arrives. A `labeled`
+# event does not cancel: that run queues behind the one already in flight and
+# then no-ops through the guards above, so a label can no longer take the real
+# run down with it.
+#
+# `full-e2e` is carved back out because it is the one label that launches work
+# rather than skipping through the guards, and an operator adding it is asking
+# for the definitive run — so it supersedes the scoped run it replaces, exactly
+# as it did before. That does not reopen the hole above: a run carrying that
+# label executes the full suite instead of reporting a set of skips.
+#
+# Queuing protects a pending run from the run AHEAD of it, never from the one
+# behind: the group holds a single pending run, and a newer run evicts it. For
+# an ordinary label that is harmless, because the survivor cannot cancel
+# anything either. For `full-e2e` it is not: that run cancels the scoped run and
+# then sits in the pending slot while the cancelled one drains, so a label
+# landing in that window evicts it and the operator's explicit request ends with
+# no run and no signal. The window is the drain rather than the whole suite, and
+# the same request was lost outright before this change, so it is narrowed here
+# rather than introduced.
 concurrency:
   group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action != 'labeled' || github.event.label.name == 'full-e2e' }}
 
 # Top-level token defaults to read-only; jobs request the minimum extra scopes.
 permissions:

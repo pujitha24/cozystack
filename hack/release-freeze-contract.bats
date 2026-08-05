@@ -274,3 +274,17 @@ step_line() {
   # And the head of that sort is what `backport` uses.
   printf '%s\n' "$block" | script_lines | grep -qF 'lines[0].name'
 }
+
+# ── backport concurrency ─────────────────────────────────────────────────────
+
+@test "a labeled event does not cancel the backport run in flight" {
+  # backport.yaml subscribes to `labeled`, and a run joins its concurrency group
+  # before `prepare`'s guard above is evaluated. Labels arrive in bursts from
+  # third-party GitHub Apps, so under a plain `true` each one killed the backport
+  # the merge had just started. Nothing reports that: the run list shows a
+  # cancelled run next to a green one, and the backport PR is simply absent until
+  # someone notices the release line is missing a fix. Same invariant as the pin
+  # in promote-gate-contract.bats, which is where the mechanism is written out.
+  count="$(code_lines < "$BACKPORT" | grep -cF "  cancel-in-progress: \${{ github.event.action != 'labeled' }}" || true)"
+  [ "${count:-0}" -eq 1 ]
+}

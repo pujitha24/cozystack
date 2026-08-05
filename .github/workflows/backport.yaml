@@ -4,9 +4,25 @@ on:
   pull_request_target:
     types: [closed, labeled]   # fires when PR is closed (merged) or labeled
 
+# A `labeled` run does not CANCEL: it queues behind whatever is in flight for
+# the same PR instead of killing it. Labels arrive in bursts from third-party
+# GitHub Apps, and each one used to cancel the backport run started by the
+# merge. The exemption runs one way only — such a run is still evicted while it
+# is pending, because the group holds a single pending run and a newer one takes
+# its place.
+#
+# The cost is that a post-merge label now REPEATS the backport rather than
+# restarting it: `prepare` below passes on the label set alone, so the queued
+# run redoes the work after the merge-triggered run has already opened the PR.
+# backport-action absorbs that: its branch name is derived from the PR and
+# target, it recovers an existing branch when the push is rejected, and it skips
+# on the "a pull request already exists" error, so the repeat normally costs
+# runner minutes and nothing else. The one case it does not cover is a backport
+# PR merged and its branch deleted before the queued run pushes, where the push
+# succeeds and opens a second PR for work already landed.
 concurrency:
   group: backport-${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
 
 # Top-level token defaults to read-only; jobs request the minimum extra scopes.
 permissions:
