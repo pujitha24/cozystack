@@ -4,15 +4,10 @@
 // Package denyset validates a SiteRouter instance's declared remoteCIDRs against
 // the cluster-owned networks they must never overlap.
 //
-// It is a dependency-light leaf package — standard library net/netip plus a
-// plain cluster-CIDR struct, nothing else — so it can be imported both by the
-// site-router controller (internal/controller/siterouter) and by the SiteRouter
-// admission check in the aggregated apiserver (pkg/registry/apps/application)
-// without dragging controller-runtime into the apiserver. The controller and the
-// admission plugin share this single validator so a remoteCIDR that would
-// blackhole cluster traffic is rejected identically at admission time
-// (synchronous Forbidden) and at reconcile time (a machine-readable Ready
-// reason). See DECISIONS.md D9/D10.
+// The pure validator remains standard-library-only; discovery.go adds the shared
+// Kubernetes object resolver used by both the site-router controller and the
+// SiteRouter admission check. Keeping discovery beside validation prevents the
+// two enforcement points from silently assembling different deny-sets.
 package denyset
 
 import (
@@ -22,9 +17,9 @@ import (
 
 // ReasonInvalidRemoteCIDR is the stable, machine-readable reason both callers
 // surface for a remoteCIDR that is malformed or overlaps a cluster network: the
-// admission check as the reason of a Forbidden error, the controller as the
-// reason of its Ready=False condition. It is part of the contract the upstream
-// consumer consumes, so it must not change.
+// admission check in a Forbidden error and the controller in a Warning Event.
+// It is part of the contract the upstream consumer consumes, so it must not
+// change.
 const ReasonInvalidRemoteCIDR = "InvalidRemoteCIDR"
 
 // Machine-readable labels for the network a rejected remoteCIDR collides with.
@@ -80,13 +75,8 @@ const (
 // ClusterNetworksFromConfigMap maps the raw data of the cozy-system/cozystack
 // ConfigMap into ClusterNetworks, applying the platform-values defaults for any
 // key that is absent or empty. Passing a nil map (the ConfigMap does not exist)
-// yields the all-defaults set. NodeCIDRs and LBPools are left empty: the node
-// subnet is not exposed as a cluster fact (nodes are on the host network and the
-// ConfigMap has no nodeCIDR key) and LB pools are admin-provisioned out of band,
-// so neither is cleanly discoverable; the empty-field-skipped contract makes that
-// safe, and pod/service/join plus the always-reserved networks cover the
-// cluster-traffic-blackhole cases. It is pure and stdlib-only so both the
-// controller and the apiserver admission check share one mapping.
+// yields the all-defaults set. NodeCIDRs and LBPools are left empty here and are
+// populated from live Nodes and Services by DiscoverClusterNetworks.
 func ClusterNetworksFromConfigMap(data map[string]string) ClusterNetworks {
 	nets := ClusterNetworks{
 		PodCIDR:     DefaultPodCIDR,
@@ -109,9 +99,8 @@ func ClusterNetworksFromConfigMap(data map[string]string) ClusterNetworks {
 // disjoint from. PodCIDR/ServiceCIDR/JoinCIDR come from the cozy-system/cozystack
 // ConfigMap (ipv4-pod-cidr / ipv4-svc-cidr / ipv4-join-cidr) with the
 // platform-values defaults as fallback; NodeCIDRs and LBPools come from Node / LB
-// pool discovery or a controller flag. The admission check is handed the same
-// values. Empty string fields are skipped, so a caller that cannot discover a
-// given network simply does not enforce against it. The always-reserved networks
+// address discovery. The admission check is handed the same values. Empty string
+// fields are skipped. The always-reserved networks
 // (link-local 169.254.0.0/16, loopback 127.0.0.0/8, and the 0.0.0.0/0 default
 // route) are enforced unconditionally and need not be supplied here.
 type ClusterNetworks struct {

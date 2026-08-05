@@ -248,6 +248,45 @@ func TestSiteRouterAdmission_ConfigMapOverridesDefaults(t *testing.T) {
 	}
 }
 
+func TestSiteRouterAdmission_RejectsSubnetContainingLiveNodeAddress(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{
+			Type: corev1.NodeInternalIP, Address: "192.168.100.10",
+		}}},
+	}
+	r := newSiteRouterREST(t, siteRouterKindName, cozystackCM(defaultClusterCIDRs()), node)
+	app := siteRouterApp(t, siteRouterKindName, "gw", "192.168.100.0/24")
+
+	err := r.validateSiteRouterRemoteCIDRs(context.Background(), app)
+	if err == nil || !apierrors.IsForbidden(err) {
+		t.Fatalf("expected live node overlap to be Forbidden, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "192.168.100.10/32") {
+		t.Errorf("rejection %q should name the live node address", err.Error())
+	}
+}
+
+func TestSiteRouterAdmission_RejectsSubnetContainingAllocatedLoadBalancerIP(t *testing.T) {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "public", Namespace: "tenant-other"},
+		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
+		Status: corev1.ServiceStatus{LoadBalancer: corev1.LoadBalancerStatus{
+			Ingress: []corev1.LoadBalancerIngress{{IP: "198.51.100.20"}},
+		}},
+	}
+	r := newSiteRouterREST(t, siteRouterKindName, cozystackCM(defaultClusterCIDRs()), svc)
+	app := siteRouterApp(t, siteRouterKindName, "gw", "198.51.100.0/24")
+
+	err := r.validateSiteRouterRemoteCIDRs(context.Background(), app)
+	if err == nil || !apierrors.IsForbidden(err) {
+		t.Fatalf("expected allocated LoadBalancer overlap to be Forbidden, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "198.51.100.20/32") {
+		t.Errorf("rejection %q should name the allocated LoadBalancer address", err.Error())
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Admission-chain wiring (Create / Update call sites)
 // -----------------------------------------------------------------------------

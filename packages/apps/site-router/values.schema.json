@@ -31,7 +31,8 @@
         "address": {
           "description": "Public address (IP or hostname) of the remote peer. Responder model: the remote peer dials in.",
           "type": "string",
-          "default": ""
+          "default": "",
+          "pattern": "^[A-Za-z0-9.:-]*$"
         },
         "auth": {
           "description": "IPsec authentication material for the tunnel.",
@@ -51,7 +52,7 @@
       }
     },
     "remoteCIDRs": {
-      "description": "Remote networks reachable over the tunnel. Must be disjoint from the cluster pod/service/join networks (validated by the controller).",
+      "description": "Remote networks reachable over the tunnel. Must be disjoint from cluster pod/service/join networks, live node addresses, and allocated LoadBalancer/external service addresses (validated at admission and by the controller).",
       "type": "array",
       "default": [],
       "items": {
@@ -71,11 +72,13 @@
         "properties": {
           "destination": {
             "description": "Destination network in CIDR notation.",
-            "type": "string"
+            "type": "string",
+            "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$"
           },
           "nextHop": {
             "description": "Next-hop IP address for the destination.",
-            "type": "string"
+            "type": "string",
+            "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
           }
         }
       }
@@ -111,7 +114,8 @@
             "properties": {
               "address": {
                 "description": "Neighbor IP address.",
-                "type": "string"
+                "type": "string",
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
               },
               "remoteASN": {
                 "description": "Remote autonomous system number of the neighbor. Must be a valid ASN (1..4294967295).",
@@ -167,26 +171,6 @@
             }
           ],
           "x-kubernetes-int-or-string": true
-        }
-      }
-    },
-    "image": {
-      "description": "Boot-disk image source override for the router VM. By default the boot disk imports the platform's digest-pinned VyOS appliance containerDisk, built by the `vyos-router-image` package and referenced from this chart's `images/vyos-router-disk.tag`. This override exists only to point an installation at an operator-hosted appliance disk instead.",
-      "type": "object",
-      "default": {},
-      "required": [
-        "enabled"
-      ],
-      "properties": {
-        "enabled": {
-          "description": "Import the boot disk over HTTP from `url` instead of the platform's digest-pinned VyOS appliance containerDisk.",
-          "type": "boolean",
-          "default": false
-        },
-        "url": {
-          "description": "HTTP(S) URL of a VyOS qcow2/raw disk image. Used only when `enabled` is true.",
-          "type": "string",
-          "default": ""
         }
       }
     },

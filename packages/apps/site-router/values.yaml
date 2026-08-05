@@ -18,6 +18,7 @@ tunnel:
 
 ## @typedef {struct} Peer - Remote peer the tunnel connects to. A single peer per instance (one tunnel); reach a second site with a second instance.
 ## @field {string} address - Public address (IP or hostname) of the remote peer. Responder model: the remote peer dials in.
+## @pattern ^[A-Za-z0-9.:-]*$
 ## @field {PeerAuth} [auth] - IPsec authentication material for the tunnel.
 
 ## @param {Peer} peer - Remote peer this router builds a tunnel to.
@@ -29,18 +30,21 @@ peer:
 ## @section Routing configuration
 ##
 
-## @param {[]string} remoteCIDRs - Remote networks reachable over the tunnel. Must be disjoint from the cluster pod/service/join networks (validated by the controller).
+## @param {[]string} remoteCIDRs - Remote networks reachable over the tunnel. Must be disjoint from cluster pod/service/join networks, live node addresses, and allocated LoadBalancer/external service addresses (validated at admission and by the controller).
 remoteCIDRs: []
 
 ## @typedef {struct} StaticRoute - Static route programmed on the router.
 ## @field {string} destination - Destination network in CIDR notation.
+## @pattern ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$
 ## @field {string} nextHop - Next-hop IP address for the destination.
+## @pattern ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$
 
 ## @param {[]StaticRoute} staticRoutes - Optional extra static routes programmed on the router.
 staticRoutes: []
 
 ## @typedef {struct} BGPNeighbor - BGP neighbor.
 ## @field {string} address - Neighbor IP address.
+## @pattern ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$
 ## @field {int} remoteASN - Remote autonomous system number of the neighbor. Must be a valid ASN (1..4294967295).
 ## @minimum 1
 ## @maximum 4294967295
@@ -82,17 +86,8 @@ resources:
   memory: 2Gi
 
 ##
-## @section Image and low-level materialization
+## @section Low-level materialization
 ##
-
-## @typedef {struct} Image - Boot-disk image source override for the router VM.
-## @field {bool} enabled - Import the boot disk over HTTP from `url` instead of the platform's digest-pinned VyOS appliance containerDisk.
-## @field {string} [url] - HTTP(S) URL of a VyOS qcow2/raw disk image. Used only when `enabled` is true.
-
-## @param {Image} image - Boot-disk image source override for the router VM. By default the boot disk imports the platform's digest-pinned VyOS appliance containerDisk, built by the `vyos-router-image` package and referenced from this chart's `images/vyos-router-disk.tag`. This override exists only to point an installation at an operator-hosted appliance disk instead.
-image:
-  enabled: false
-  url: ""
 
 ## @param {string} managementCIDR - Source CIDR allowed to reach the VyOS management API (HTTPS 443) through the first-boot firewall. This value and the controller's --management-cidr flag (T05/T06) must agree: both default to the cluster pod CIDR (10.244.0.0/16, the kube-ovn default) and must be kept consistent. On a cluster with a non-default `networking.podCIDR`, set this (and the controller's managementCidr) to that pod CIDR, or the firewall will reject the real controller source. An empty value requires `allowOpenManagement=true` (fail-closed). Constrained to a strict IPv4 CIDR (or empty) so a tenant value cannot inject arbitrary text into the VyOS first-boot config.
 ## The pattern validates octet RANGE and prefix length, not merely digit shape: a

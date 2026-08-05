@@ -1,4 +1,4 @@
-suite: cozystack-api ClusterRole grants Option provider sources
+suite: cozystack-api ClusterRole read sources
 templates:
   - templates/rbac.yaml
 
@@ -15,6 +15,21 @@ release:
 # the API group string exactly.
 
 tests:
+  - it: grants SiteRouter admission read access to Services and Nodes
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["namespaces", "secrets", "services"]
+            verbs: ["get", "watch", "list"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["nodes", "persistentvolumeclaims"]
+            verbs: ["get", "watch", "list"]
+
   - it: grants read on backups.cozystack.io plans and backups for the plan/backup providers
     asserts:
       - contains:

@@ -22,7 +22,6 @@ import (
 	"errors"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -91,25 +90,20 @@ func (r *REST) validateSiteRouterRemoteCIDRs(ctx context.Context, app *appsv1alp
 	return apierrors.NewForbidden(r.gvr.GroupResource(), app.Name, errors.New(strings.Join(msgs, "; ")))
 }
 
-// siteRouterClusterNetworks resolves the deny-set's cluster networks from the
-// cozy-system/cozystack ConfigMap via the shared denyset mapping, so the apiserver
-// and the controller judge a remoteCIDR against identical networks (D10).
+// siteRouterClusterNetworks resolves the deny-set's stable CIDRs and live node
+// and service addresses through the shared discovery helper, so the apiserver
+// and controller judge a remoteCIDR against identical networks (D10).
 func (r *REST) siteRouterClusterNetworks(ctx context.Context) (denyset.ClusterNetworks, error) {
-	cm := &corev1.ConfigMap{}
-	err := r.clusterReader().Get(ctx, types.NamespacedName{Namespace: siteRouterConfigNamespace, Name: siteRouterConfigName}, cm)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return denyset.ClusterNetworksFromConfigMap(nil), nil // all defaults
-		}
-		return denyset.ClusterNetworks{}, err
-	}
-	return denyset.ClusterNetworksFromConfigMap(cm.Data), nil
+	return denyset.DiscoverClusterNetworks(ctx, r.clusterReader(), types.NamespacedName{
+		Namespace: siteRouterConfigNamespace,
+		Name:      siteRouterConfigName,
+	})
 }
 
-// clusterReader returns the reader the SiteRouter deny-set uses for its one
-// cluster ConfigMap read. The direct (uncached) watch client is preferred so the
-// read does not spin up a cluster-wide ConfigMap informer in the apiserver cache;
-// it falls back to the cached client when no watch client is wired (unit tests).
+// clusterReader returns the reader SiteRouter deny-set discovery uses for the
+// ConfigMap, Node, and Service reads. The direct (uncached) watch client is
+// preferred so discovery does not require cluster-wide cache informers; it falls
+// back to the cached client when no watch client is wired (unit tests).
 func (r *REST) clusterReader() client.Reader {
 	if r.w != nil {
 		return r.w

@@ -3,9 +3,10 @@ suite: site-router boot DataVolume
 # T04/T11 — the boot disk is a CDI DataVolume. By default it imports the
 # digest-pinned VyOS appliance containerDisk built by
 # packages/system/vyos-router-image, whose reference this chart carries in
-# images/vyos-router-disk.tag. An http source override (image.enabled + image.url)
-# points the boot disk at an operator-hosted appliance disk instead. storageClass
-# is pinned to `replicated` (DRBD/LINSTOR) so the boot disk is live-migratable.
+# images/vyos-router-disk.tag. The source is not tenant-overridable because the
+# guest firewall is the sole compensating control for the relaxed OVN port.
+# storageClass is pinned to `replicated` (DRBD/LINSTOR) so the boot disk is
+# live-migratable.
 #
 # Importing per instance rather than cloning a shared golden in cozy-public is
 # deliberate: a shared golden is populated only at creation, so advancing the
@@ -72,18 +73,3 @@ tests:
       - equal:
           path: spec.storage.resources.requests.storage
           value: 12Gi
-
-  - it: http override sources the boot disk from image.url
-    set:
-      image:
-        enabled: true
-        url: https://images.example.test/vyos-1.5-rolling.qcow2
-    documentSelector:
-      path: kind
-      value: DataVolume
-    asserts:
-      - equal:
-          path: spec.source.http.url
-          value: https://images.example.test/vyos-1.5-rolling.qcow2
-      - notExists:
-          path: spec.source.registry

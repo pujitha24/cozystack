@@ -33,7 +33,7 @@ func routeSet(t *testing.T, encoded string) map[string]string {
 // built correctly" case: one remoteCIDR against an empty namespace annotation
 // yields a single {dst,gw} entry pointing at the gateway pod IP.
 func TestMergeRoutes_BuildsAnnotationJSON(t *testing.T) {
-	got, err := mergeRoutes("", "10.244.0.5", []string{"172.31.0.0/16"})
+	got, err := mergeRoutes("", "10.244.0.5", "", []string{"172.31.0.0/16"})
 	if err != nil {
 		t.Fatalf("mergeRoutes: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestMergeRoutes_BuildsAnnotationJSON(t *testing.T) {
 // already carries a co-tenant instance's route must keep both.
 func TestMergeRoutes_AccumulatesByDst(t *testing.T) {
 	existing := `[{"dst":"10.10.0.0/16","gw":"10.244.0.9"}]` // another instance's gateway
-	got, err := mergeRoutes(existing, "10.244.0.5", []string{"172.31.0.0/16"})
+	got, err := mergeRoutes(existing, "10.244.0.5", "", []string{"172.31.0.0/16"})
 	if err != nil {
 		t.Fatalf("mergeRoutes: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestMergeRoutes_AccumulatesByDst(t *testing.T) {
 // updates the gw in place (keyed by dst) rather than duplicating the dst.
 func TestMergeRoutes_UpsertsSameDst(t *testing.T) {
 	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.5"}]`
-	got, err := mergeRoutes(existing, "10.244.0.7", []string{"172.31.0.0/16"})
+	got, err := mergeRoutes(existing, "10.244.0.7", "10.244.0.5", []string{"172.31.0.0/16"})
 	if err != nil {
 		t.Fatalf("mergeRoutes: %v", err)
 	}
@@ -79,15 +79,27 @@ func TestMergeRoutes_UpsertsSameDst(t *testing.T) {
 	}
 }
 
+func TestMergeRoutes_RejectsSiblingSameDestination(t *testing.T) {
+	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.9"}]`
+	_, err := mergeRoutes(existing, "10.244.0.5", "", []string{"172.31.0.0/16"})
+	var conflict *routeConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected routeConflictError, got %v", err)
+	}
+	if conflict.Dst != "172.31.0.0/16" || conflict.ExistingGateway != "10.244.0.9" {
+		t.Fatalf("unexpected conflict details: %+v", conflict)
+	}
+}
+
 // TestMergeRoutes_Idempotent proves the canonical encoding is stable: merging the
 // same desired state twice yields byte-identical JSON (so a config-hash / SSA
 // no-op guard does not see spurious drift).
 func TestMergeRoutes_Idempotent(t *testing.T) {
-	first, err := mergeRoutes("", "10.244.0.5", []string{"172.31.0.0/16", "10.10.0.0/16"})
+	first, err := mergeRoutes("", "10.244.0.5", "", []string{"172.31.0.0/16", "10.10.0.0/16"})
 	if err != nil {
 		t.Fatalf("mergeRoutes first: %v", err)
 	}
-	second, err := mergeRoutes(first, "10.244.0.5", []string{"172.31.0.0/16", "10.10.0.0/16"})
+	second, err := mergeRoutes(first, "10.244.0.5", "10.244.0.5", []string{"172.31.0.0/16", "10.10.0.0/16"})
 	if err != nil {
 		t.Fatalf("mergeRoutes second: %v", err)
 	}
@@ -101,7 +113,7 @@ func TestMergeRoutes_Idempotent(t *testing.T) {
 // drops only its own dst entries and leaves the co-tenant's intact.
 func TestRemoveRoutes_RemovesOnlyOwnEntries(t *testing.T) {
 	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.5"},{"dst":"10.10.0.0/16","gw":"10.244.0.9"}]`
-	got, err := removeRoutes(existing, "10.244.0.5", []string{"172.31.0.0/16"})
+	got, err := removeRoutes(existing, "10.244.0.5")
 	if err != nil {
 		t.Fatalf("removeRoutes: %v", err)
 	}
@@ -122,7 +134,7 @@ func TestRemoveRoutes_RemovesAllOwnEntriesByGatewayIP(t *testing.T) {
 	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.5"},{"dst":"10.10.0.0/16","gw":"10.244.0.5"},{"dst":"192.0.2.0/24","gw":"10.244.0.9"}]`
 	// remoteCIDRs was shrunk to just 172.31 before delete; 10.10 is stale but
 	// still owned by this gateway and must be reclaimed.
-	got, err := removeRoutes(existing, "10.244.0.5", []string{"172.31.0.0/16"})
+	got, err := removeRoutes(existing, "10.244.0.5")
 	if err != nil {
 		t.Fatalf("removeRoutes: %v", err)
 	}
@@ -132,6 +144,27 @@ func TestRemoveRoutes_RemovesAllOwnEntriesByGatewayIP(t *testing.T) {
 	}
 	if _, ok := set["10.10.0.0/16"]; ok {
 		t.Errorf("stale own route 10.10.0.0/16 should have been removed by gateway-IP ownership, got %q", got)
+	}
+	if set["192.0.2.0/24"] != "10.244.0.9" {
+		t.Errorf("co-tenant route 192.0.2.0/24 must survive removal, got %q", got)
+	}
+}
+
+// TestRemoveRoutes_RemovesPersistedAndCurrentGatewayEntries proves cleanup
+// reclaims both generations when a recreated gateway pod has a new IP before
+// the controller can migrate every route from the persisted owner.
+func TestRemoveRoutes_RemovesPersistedAndCurrentGatewayEntries(t *testing.T) {
+	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.5"},{"dst":"10.10.0.0/16","gw":"10.244.0.7"},{"dst":"192.0.2.0/24","gw":"10.244.0.9"}]`
+	got, err := removeRoutes(existing, "10.244.0.5", "10.244.0.7")
+	if err != nil {
+		t.Fatalf("removeRoutes: %v", err)
+	}
+	set := routeSet(t, got)
+	if _, ok := set["172.31.0.0/16"]; ok {
+		t.Errorf("persisted-gateway route should have been removed, got %q", got)
+	}
+	if _, ok := set["10.10.0.0/16"]; ok {
+		t.Errorf("current-gateway route should have been removed, got %q", got)
 	}
 	if set["192.0.2.0/24"] != "10.244.0.9" {
 		t.Errorf("co-tenant route 192.0.2.0/24 must survive removal, got %q", got)
@@ -149,7 +182,7 @@ func TestRemoveRoutes_PreservesCoTenantSameDstDifferentGw(t *testing.T) {
 	// (a later upsert moved the gw). This instance's gateway is 10.244.0.5 and it
 	// still declares 172.31.0.0/16.
 	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.9"}]`
-	got, err := removeRoutes(existing, "10.244.0.5", []string{"172.31.0.0/16"})
+	got, err := removeRoutes(existing, "10.244.0.5")
 	if err != nil {
 		t.Fatalf("removeRoutes: %v", err)
 	}
@@ -159,22 +192,18 @@ func TestRemoveRoutes_PreservesCoTenantSameDstDifferentGw(t *testing.T) {
 	}
 }
 
-// TestRemoveRoutes_DstFallbackWhenGatewayIPUnavailable proves the dst-based
-// fallback still fires when the gateway IP is unknown (the pod is already gone at
-// finalizer time): this instance's declared dsts are withdrawn, a co-tenant's
-// undeclared dst survives.
-func TestRemoveRoutes_DstFallbackWhenGatewayIPUnavailable(t *testing.T) {
+// TestRemoveRoutes_PreservesAllWhenGatewayIPUnavailable proves cleanup never
+// guesses ownership by destination when the gateway IP is unknown. The shared
+// destination may now belong to the sibling gateway, so preserving it is safer
+// than creating a permanent route defect in newly created co-tenant pods.
+func TestRemoveRoutes_PreservesAllWhenGatewayIPUnavailable(t *testing.T) {
 	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.5"},{"dst":"192.0.2.0/24","gw":"10.244.0.9"}]`
-	got, err := removeRoutes(existing, "", []string{"172.31.0.0/16"}) // gateway IP unavailable
+	got, err := removeRoutes(existing, "")
 	if err != nil {
 		t.Fatalf("removeRoutes: %v", err)
 	}
-	set := routeSet(t, got)
-	if _, ok := set["172.31.0.0/16"]; ok {
-		t.Errorf("with the gateway IP unavailable, a declared dst must be withdrawn by the fallback, got %q", got)
-	}
-	if set["192.0.2.0/24"] != "10.244.0.9" {
-		t.Errorf("an undeclared co-tenant dst must survive the fallback, got %q", got)
+	if got != existing {
+		t.Errorf("unknown ownership must preserve the route annotation byte-for-byte, got %q", got)
 	}
 }
 
@@ -186,7 +215,7 @@ func TestMergeRoutes_PrunesOwnStaleOnShrink(t *testing.T) {
 	// This instance owns A (10.10) and B (172.31) at gw 10.244.0.5; a co-tenant
 	// owns C (192.0.2) at gw 10.244.0.9.
 	existing := `[{"dst":"10.10.0.0/16","gw":"10.244.0.5"},{"dst":"172.31.0.0/16","gw":"10.244.0.5"},{"dst":"192.0.2.0/24","gw":"10.244.0.9"}]`
-	got, err := mergeRoutes(existing, "10.244.0.5", []string{"10.10.0.0/16"}) // shrink to A only
+	got, err := mergeRoutes(existing, "10.244.0.5", "10.244.0.5", []string{"10.10.0.0/16"}) // shrink to A only
 	if err != nil {
 		t.Fatalf("mergeRoutes: %v", err)
 	}
@@ -206,7 +235,7 @@ func TestMergeRoutes_PrunesOwnStaleOnShrink(t *testing.T) {
 // withdraws every entry this instance owns while leaving a co-tenant entry.
 func TestMergeRoutes_PrunesAllOwnOnEmptyShrink(t *testing.T) {
 	existing := `[{"dst":"172.31.0.0/16","gw":"10.244.0.5"},{"dst":"192.0.2.0/24","gw":"10.244.0.9"}]`
-	got, err := mergeRoutes(existing, "10.244.0.5", nil)
+	got, err := mergeRoutes(existing, "10.244.0.5", "10.244.0.5", nil)
 	if err != nil {
 		t.Fatalf("mergeRoutes: %v", err)
 	}

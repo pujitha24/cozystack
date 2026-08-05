@@ -64,7 +64,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics server")
 	flag.StringVar(&managementCIDR, "management-cidr", "",
-		"IPv4 CIDR allowed to reach the VyOS management API (HTTPS 443) and SSH (22). REQUIRED in production. "+
+		"IPv4 CIDR allowed to reach the VyOS management API (HTTPS 443). REQUIRED in production. "+
 			"MUST match the site-router chart's managementCIDR value (both default to the cluster pod CIDR "+
 			"10.244.0.0/16): the chart seeds the first-boot firewall from it and the controller re-stamps the same "+
 			"rule over the VyOS API. Pass --allow-open-management to explicitly opt out (test environments only).")
@@ -87,7 +87,7 @@ func main() {
 		os.Exit(1)
 	}
 	if managementCIDR == "" {
-		setupLog.Info("WARNING: --allow-open-management is set; the VyOS management API will accept SSH/HTTPS " +
+		setupLog.Info("WARNING: --allow-open-management is set; the VyOS management API will accept HTTPS " +
 			"from any source. DO NOT use this configuration in production.")
 	}
 

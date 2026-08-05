@@ -272,6 +272,52 @@ func TestReconcile_ProgramsNamespaceRoutes(t *testing.T) {
 	if set["10.10.0.0/16"] != "10.244.0.5" {
 		t.Errorf("expected route 10.10.0.0/16 -> 10.244.0.5, got %q", ann)
 	}
+	hr := &helmv2.HelmRelease{}
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "tenant-test", Name: releasePrefix + "demo"}, hr); err != nil {
+		t.Fatalf("get HelmRelease: %v", err)
+	}
+	if got := hr.Annotations[routeGatewayIPAnnotation]; got != "10.244.0.5" {
+		t.Errorf("route owner annotation = %q, want gateway IP 10.244.0.5", got)
+	}
+}
+
+// TestReconcile_DenySetChangeWithdrawsExistingRoutes proves a remoteCIDR that
+// becomes unsafe after cluster topology changes cannot leave its previously
+// programmed namespace route behind.
+func TestReconcile_DenySetChangeWithdrawsExistingRoutes(t *testing.T) {
+	hr := siteRouterHRWithValues(t, "demo", map[string]interface{}{
+		"remoteCIDRs": []interface{}{"192.168.100.0/24"},
+	})
+	hr.Annotations = map[string]string{routeGatewayIPAnnotation: "10.244.0.5"}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "tenant-test",
+		Annotations: map[string]string{
+			routesAnnotation: `[{"dst":"192.168.100.0/24","gw":"10.244.0.5"},{"dst":"172.31.0.0/16","gw":"10.244.0.9"}]`,
+		},
+	}}
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{
+			Type: corev1.NodeInternalIP, Address: "192.168.100.10",
+		}}},
+	}
+	r := newTestReconciler(t, hr, ns, node, cozystackConfigMap())
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: hr.Namespace, Name: hr.Name}})
+	if err == nil || !strings.Contains(err.Error(), denyset.ReasonInvalidRemoteCIDR) {
+		t.Fatalf("expected node-overlap denial, got %v", err)
+	}
+	got := &corev1.Namespace{}
+	if err := r.Get(context.Background(), types.NamespacedName{Name: "tenant-test"}, got); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	set := routeSet(t, got.Annotations[routesAnnotation])
+	if _, ok := set["192.168.100.0/24"]; ok {
+		t.Errorf("newly invalid route must be withdrawn, got %q", got.Annotations[routesAnnotation])
+	}
+	if set["172.31.0.0/16"] != "10.244.0.9" {
+		t.Errorf("sibling route must survive deny-set withdrawal, got %q", got.Annotations[routesAnnotation])
+	}
 }
 
 // TestReconcile_EmptyRemoteCIDRsWithdrawsRoute encodes the R4 fix: emptying
@@ -312,6 +358,39 @@ func TestReconcile_EmptyRemoteCIDRsWithdrawsRoute(t *testing.T) {
 	}
 }
 
+func TestReconcile_RouteConflictPreservesSiblingNextHop(t *testing.T) {
+	fakeV := &fakeVyOS{}
+	objects := readyObjects(t, "demo", routedValues(), "10.244.0.5")
+	for _, object := range objects {
+		if ns, ok := object.(*corev1.Namespace); ok {
+			ns.Annotations = map[string]string{
+				routesAnnotation: `[{"dst":"172.31.0.0/16","gw":"10.244.0.9"}]`,
+			}
+		}
+	}
+	r, rec := newVyOSReconciler(t, fakeV, objects...)
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: "tenant-test", Name: releasePrefix + "demo",
+	}})
+	if err == nil || !strings.Contains(err.Error(), reasonRouteConflict) {
+		t.Fatalf("expected %s error, got %v", reasonRouteConflict, err)
+	}
+	if !hasEventReason(rec, reasonRouteConflict) {
+		t.Errorf("expected %s Warning Event", reasonRouteConflict)
+	}
+	ns := &corev1.Namespace{}
+	if err := r.Get(context.Background(), types.NamespacedName{Name: "tenant-test"}, ns); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	if got := routeSet(t, ns.Annotations[routesAnnotation])["172.31.0.0/16"]; got != "10.244.0.9" {
+		t.Errorf("conflict must preserve sibling next hop 10.244.0.9, got %q", got)
+	}
+	if fakeV.Configures() != 0 {
+		t.Errorf("route conflict must stop before guest configuration, got %d Configure calls", fakeV.Configures())
+	}
+}
+
 // TestReconcile_FinalizerRestoresStateOnDelete encodes the T07 Acceptance
 // "deleting the instance removes the routes annotation + restores port_security":
 // on delete the controller must withdraw its own route entry from the namespace
@@ -321,6 +400,7 @@ func TestReconcile_FinalizerRestoresStateOnDelete(t *testing.T) {
 		"remoteCIDRs": []interface{}{"172.31.0.0/16"},
 	})
 	hr.Finalizers = []string{finalizer}
+	hr.Annotations = map[string]string{routeGatewayIPAnnotation: "10.244.0.5"}
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -360,6 +440,41 @@ func TestReconcile_FinalizerRestoresStateOnDelete(t *testing.T) {
 	}
 	if ann := gotNS.Annotations[routesAnnotation]; strings.Contains(ann, "172.31.0.0/16") {
 		t.Errorf("instance route entry must be removed on delete, namespace still has %s=%q", routesAnnotation, ann)
+	}
+}
+
+// TestReconcile_FinalizerUsesPersistedGatewayAfterPodIsGone proves cleanup still
+// removes only this instance's entries when helm-controller has already deleted
+// the gateway pod before the SiteRouter finalizer runs.
+func TestReconcile_FinalizerUsesPersistedGatewayAfterPodIsGone(t *testing.T) {
+	hr := siteRouterHRWithValues(t, "demo", map[string]interface{}{
+		"remoteCIDRs": []interface{}{"172.31.0.0/16"},
+	})
+	hr.Finalizers = []string{finalizer}
+	hr.Annotations = map[string]string{routeGatewayIPAnnotation: "10.244.0.5"}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "tenant-test",
+		Annotations: map[string]string{
+			routesAnnotation: `[{"dst":"172.31.0.0/16","gw":"10.244.0.5"},{"dst":"192.0.2.0/24","gw":"10.244.0.9"}]`,
+		},
+	}}
+	r := newTestReconciler(t, hr, ns)
+	if err := r.Delete(context.Background(), hr); err != nil {
+		t.Fatalf("delete HR: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: hr.Namespace, Name: hr.Name}}); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	got := &corev1.Namespace{}
+	if err := r.Get(context.Background(), types.NamespacedName{Name: "tenant-test"}, got); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	set := routeSet(t, got.Annotations[routesAnnotation])
+	if _, ok := set["172.31.0.0/16"]; ok {
+		t.Errorf("persisted gateway owner must withdraw its route, got %q", got.Annotations[routesAnnotation])
+	}
+	if set["192.0.2.0/24"] != "10.244.0.9" {
+		t.Errorf("sibling route must survive, got %q", got.Annotations[routesAnnotation])
 	}
 }
 

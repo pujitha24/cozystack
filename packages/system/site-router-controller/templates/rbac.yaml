@@ -25,17 +25,26 @@ rules:
 - apiGroups: [""]
   resources: ["namespaces"]
   verbs: ["get", "patch"]
-# Read the per-instance PSK / api-key Secrets (VyOS HTTPS API token) and the
-# tunnel LoadBalancer Service (external address).
+# Read the per-instance PSK / api-key Secrets (VyOS HTTPS API token).
 #
-# `get` ONLY, deliberately. Both are read one object at a time through the
-# uncached APIReader (readTunnelLBAddress, readPushSecrets) and neither is in
-# CacheByObject, so list/watch would grant nothing the controller uses — and on
-# Secrets specifically a cluster-wide `list` returns object CONTENTS, turning an
-# unused verb into a cross-tenant credential-exfiltration surface. Keep it off.
+# `get` ONLY, deliberately. Secrets are read one object at a time through the
+# uncached APIReader and are not in CacheByObject, so list/watch would grant
+# nothing the controller uses — and a cluster-wide Secret `list` returns object
+# contents, turning an unused verb into a cross-tenant credential-exfiltration
+# surface. Keep it off.
 - apiGroups: [""]
-  resources: ["secrets", "services"]
+  resources: ["secrets"]
   verbs: ["get"]
+# Resolve allocated LoadBalancer/external service IPs for the remote-CIDR
+# deny-set and list tenant-local ClusterIPs for the guest source filter. This is
+# a separate rule from Secrets so the controller never gains Secret list access.
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list"]
+# Resolve every live node address as a protected /32 in the remote-CIDR deny-set.
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["list"]
 # Read the gateway VirtualMachineInstance for NIC MAC discovery (resolving the
 # kernel device the tunnel/source-filter bind to); a single get, best-effort.
 - apiGroups: ["kubevirt.io"]

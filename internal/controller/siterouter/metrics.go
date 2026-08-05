@@ -165,10 +165,10 @@ func (r *SiteRouterReconciler) recordConfigApplyError(inst *instance) {
 	configApplyErrorsCounter.WithLabelValues(inst.namespace, inst.name).Inc()
 }
 
-// forgetMetrics deletes every series this instance owns and drops its cached
-// snapshot, so a deleted SiteRouter leaves no lingering metrics behind. Called
-// from reconcileDelete alongside forgetAppliedHash.
-func (r *SiteRouterReconciler) forgetMetrics(inst *instance) {
+// forgetRuntimeMetrics deletes the current tunnel/BGP state snapshot without
+// touching monotonic counters. It is used when reconciliation fails and the
+// previous runtime state can no longer be claimed as current.
+func (r *SiteRouterReconciler) forgetRuntimeMetrics(inst *instance) {
 	ns, name := inst.namespace, inst.name
 	key := client.ObjectKeyFromObject(inst.hr)
 
@@ -184,6 +184,15 @@ func (r *SiteRouterReconciler) forgetMetrics(inst *instance) {
 		}
 		delete(r.lastMetricSnapshot, key)
 	}
+}
+
+// forgetMetrics deletes every series this instance owns and drops its cached
+// snapshot, so a deleted SiteRouter leaves no lingering metrics behind. Called
+// from reconcileDelete alongside forgetAppliedHash.
+func (r *SiteRouterReconciler) forgetMetrics(inst *instance) {
+	r.forgetRuntimeMetrics(inst)
+
+	ns, name := inst.namespace, inst.name
 	configApplyErrorsCounter.DeleteLabelValues(ns, name)
 }
 

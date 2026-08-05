@@ -23,7 +23,7 @@ type ConfigSpec struct {
 	// Remote peer this router builds a tunnel to.
 	// +kubebuilder:default:={}
 	Peer Peer `json:"peer"`
-	// Remote networks reachable over the tunnel. Must be disjoint from the cluster pod/service/join networks (validated by the controller).
+	// Remote networks reachable over the tunnel. Must be disjoint from cluster pod/service/join networks, live node addresses, and allocated LoadBalancer/external service addresses (validated at admission and by the controller).
 	// +kubebuilder:default:={}
 	RemoteCIDRs []string `json:"remoteCIDRs,omitempty"`
 	// Optional extra static routes programmed on the router.
@@ -38,9 +38,6 @@ type ConfigSpec struct {
 	// Explicit CPU and memory sizing for the router VM.
 	// +kubebuilder:default:={}
 	Resources Resources `json:"resources"`
-	// Boot-disk image source override for the router VM. By default the boot disk imports the platform's digest-pinned VyOS appliance containerDisk, built by the `vyos-router-image` package and referenced from this chart's `images/vyos-router-disk.tag`. This override exists only to point an installation at an operator-hosted appliance disk instead.
-	// +kubebuilder:default:={}
-	Image Image `json:"image"`
 	// Source CIDR allowed to reach the VyOS management API (HTTPS 443) through the first-boot firewall. This value and the controller's --management-cidr flag (T05/T06) must agree: both default to the cluster pod CIDR (10.244.0.0/16, the kube-ovn default) and must be kept consistent. On a cluster with a non-default `networking.podCIDR`, set this (and the controller's managementCidr) to that pod CIDR, or the firewall will reject the real controller source. An empty value requires `allowOpenManagement=true` (fail-closed). Constrained to a strict IPv4 CIDR (or empty) so a tenant value cannot inject arbitrary text into the VyOS first-boot config.
 	// +kubebuilder:default:="10.244.0.0/16"
 	// +kubebuilder:validation:Pattern="^(((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(3[0-2]|[12]?[0-9]))?$"
@@ -67,6 +64,7 @@ type BGP struct {
 
 type BGPNeighbor struct {
 	// Neighbor IP address.
+	// +kubebuilder:validation:Pattern="^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
 	Address string `json:"address"`
 	// Remote autonomous system number of the neighbor. Must be a valid ASN (1..4294967295).
 	// +kubebuilder:validation:Minimum=1
@@ -74,18 +72,10 @@ type BGPNeighbor struct {
 	RemoteASN int `json:"remoteASN"`
 }
 
-type Image struct {
-	// Import the boot disk over HTTP from `url` instead of the platform's digest-pinned VyOS appliance containerDisk.
-	// +kubebuilder:default:=false
-	Enabled bool `json:"enabled"`
-	// HTTP(S) URL of a VyOS qcow2/raw disk image. Used only when `enabled` is true.
-	// +kubebuilder:default:=""
-	Url string `json:"url,omitempty"`
-}
-
 type Peer struct {
 	// Public address (IP or hostname) of the remote peer. Responder model: the remote peer dials in.
 	// +kubebuilder:default:=""
+	// +kubebuilder:validation:Pattern="^[A-Za-z0-9.:-]*$"
 	Address string `json:"address"`
 	// IPsec authentication material for the tunnel.
 	// +kubebuilder:default:={}
@@ -117,8 +107,10 @@ type Security struct {
 
 type StaticRoute struct {
 	// Destination network in CIDR notation.
+	// +kubebuilder:validation:Pattern="^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$"
 	Destination string `json:"destination"`
 	// Next-hop IP address for the destination.
+	// +kubebuilder:validation:Pattern="^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
 	NextHop string `json:"nextHop"`
 }
 

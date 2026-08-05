@@ -17,9 +17,6 @@
   that produced it in lockstep: change the digest and the next gateway gets the
   new appliance, with nothing shared to go stale and nothing to keep in sync.
 
-  Override: import over HTTP from image.url when image.enabled is true — an escape
-  hatch for an operator-hosted appliance disk.
-
   storageClass is pinned to `replicated` (DRBD/LINSTOR) so the boot disk stays
   live-migratable.
 */ -}}
@@ -32,18 +29,13 @@ metadata:
 spec:
   contentType: kubevirt
   source:
-    {{- if .Values.image.enabled }}
-    http:
-      url: {{ required "image.url is required when image.enabled is true" .Values.image.url }}
-    {{- else }}
     {{- /*
       `required` on the trimmed contents: an unstamped or empty .tag fails the
       render with a legible message instead of importing a reference that cannot
       resolve and leaving the gateway on a Pending PVC forever.
     */}}
     registry:
-      url: {{ printf "docker://%s" (required "empty images/vyos-router-disk.tag: the VyOS appliance containerDisk has not been stamped by a build — install a Cozystack build whose CI stamped it, or set image.enabled=true with image.url to import an appliance disk over HTTP" (.Files.Get "images/vyos-router-disk.tag" | trim)) | quote }}
-    {{- end }}
+      url: {{ printf "docker://%s" (required "empty images/vyos-router-disk.tag: the VyOS appliance containerDisk has not been stamped by a build — install a Cozystack build whose CI stamped it" (.Files.Get "images/vyos-router-disk.tag" | trim)) | quote }}
   storage:
     resources:
       requests:

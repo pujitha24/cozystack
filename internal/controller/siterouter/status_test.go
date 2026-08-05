@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/cozystack/cozystack/internal/siterouter/denyset"
+	"github.com/cozystack/cozystack/internal/vyos"
 )
 
 // tenantPod builds a plain tenant workload pod in tenant-test. It deliberately
@@ -67,7 +68,7 @@ func TestReconcile_SurfacesPendingRoutePods(t *testing.T) {
 	// (the two disjoint remoteCIDRs of routedValues via gateway 10.244.0.5),
 	// computed with the same canonical encoder the controller uses so the
 	// up-to-date pod carries a byte-identical value.
-	programmed, err := mergeRoutes("", "10.244.0.5", []string{"172.31.0.0/16", "10.10.0.0/16"})
+	programmed, err := mergeRoutes("", "10.244.0.5", "", []string{"172.31.0.0/16", "10.10.0.0/16"})
 	if err != nil {
 		t.Fatalf("compute programmed routes: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestSurfacePendingRoutePods_UsesUncachedReader(t *testing.T) {
 		t.Fatalf("add client-go scheme: %v", err)
 	}
 
-	programmed, err := mergeRoutes("", "10.244.0.5", []string{"172.31.0.0/16"})
+	programmed, err := mergeRoutes("", "10.244.0.5", "", []string{"172.31.0.0/16"})
 	if err != nil {
 		t.Fatalf("compute programmed routes: %v", err)
 	}
@@ -168,10 +169,53 @@ func TestMachineReadableReasons_Stable(t *testing.T) {
 		reasonSourceFilterPending:       "SourceFilterPending",
 		reasonPendingRoutes:             "PendingRoutes",
 		reasonBGPLocalASNInvalid:        "BGPLocalASNInvalid",
+		reasonRouteConflict:             "RouteConflict",
 	}
 	for got, expect := range want {
 		if got != expect {
 			t.Errorf("machine-readable reason drifted: got %q, want %q", got, expect)
 		}
+	}
+}
+
+func TestClassifySurfacesEverySoftWaitAndClearsStaleRuntimeMetrics(t *testing.T) {
+	softReasons := []string{
+		reasonGatewayPending,
+		reasonPSKPending,
+		reasonAPIKeyPending,
+		reasonTunnelAddressPending,
+		reasonSourceFilterPending,
+		reasonPortSecurityPending,
+	}
+	for _, reason := range softReasons {
+		t.Run(reason, func(t *testing.T) {
+			name := "classify-" + strings.ToLower(reason)
+			hr := siteRouterHR(name)
+			r := newTestReconciler(t, hr)
+			rec := record.NewFakeRecorder(4)
+			r.Recorder = rec
+			inst := &instance{
+				hr:        hr,
+				name:      name,
+				namespace: "tenant-test",
+				ipsecObservations: []vyos.IPSecObservation{{
+					PeerName: "peer", State: vyos.IPSecTunnelStateUp,
+				}},
+			}
+			r.updateMetrics(inst)
+
+			result, err := r.classify(context.Background(), inst, &reconcileError{
+				reason: reason, message: "waiting", requeueAfter: runtimePollInterval,
+			})
+			if err != nil || result.RequeueAfter == 0 {
+				t.Fatalf("soft wait classify = (%+v, %v), want paced requeue", result, err)
+			}
+			if !hasEventReason(rec, reason) {
+				t.Errorf("expected Warning Event with reason %q", reason)
+			}
+			if series := gaugeSeriesFor(t, "site_router_tunnel_up", "tenant-test", name); len(series) != 0 {
+				t.Errorf("stale runtime gauge must be removed on failure, got %v", series)
+			}
+		})
 	}
 }

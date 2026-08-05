@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -52,8 +54,7 @@ const canonicalSchemaVersion = 1
 const defaultTunnelDevice = "eth0"
 
 // Machine-readable reasons the config-push step surfaces. They ride on the
-// reconcileError / recorded Events so T09 can project them onto the instance's
-// Ready condition without re-deriving intent. Stable strings (part of the D4
+// reconcileError / recorded Events. Stable strings (part of the D4
 // machine-readable contract) — do not rename without updating T09.
 const (
 	// reasonConfigApplied marks a successful live push of the rendered config.
@@ -298,7 +299,10 @@ func (r *SiteRouterReconciler) pushVyOSConfig(ctx context.Context, inst *instanc
 		externalIP = addr
 	}
 
-	inputs := r.resolveInputs(ctx, inst, psk, device, externalIP)
+	inputs, err := r.resolveInputs(ctx, inst, psk, device, externalIP)
+	if err != nil {
+		return err
+	}
 	// Record the configured peers so updateMetrics can seed a 0 (Down) gauge for a
 	// tunnel/neighbor that has no active observation yet — a configured-but-down
 	// series, distinct from an absent one.
@@ -524,24 +528,33 @@ func (r *SiteRouterReconciler) pollRuntimeState(ctx context.Context, inst *insta
 // its design default (1320 → clamp 1280); ExternalIP is left empty so VyOS
 // auto-detects the IPsec local-address (Phase-1 responder model — the LB tunnel
 // address wiring is a documented follow-up).
-func (r *SiteRouterReconciler) resolveInputs(ctx context.Context, inst *instance, psk, tunnelDevice, externalIP string) render.Inputs {
+func (r *SiteRouterReconciler) resolveInputs(ctx context.Context, inst *instance, psk, tunnelDevice, externalIP string) (render.Inputs, error) {
 	vals := inst.values
 	remoteCIDRs := stringSlice(vals[remoteCIDRsValueKey])
 
 	// Tenant-reachable cluster networks constrain each tunnel-ingress source-accept
 	// so a decrypted packet with a valid remote source but a non-tenant / world
 	// destination is dropped (render.renderTunnelIngressFilter). Sourced from the
-	// same cozy-system/cozystack ConfigMap the deny-set validation reads; any read
-	// error still yields the platform defaults (clusterNetworks returns the
-	// all-defaults set alongside the error), so the constraint is never silently
-	// dropped — a bad ConfigMap read has already surfaced at validateRemoteCIDRs.
-	nets, _ := r.clusterNetworks(ctx)
+	// same cluster-network snapshot the deny-set validation reads. Discovery
+	// failures stop reconciliation, so the constraint is never silently dropped.
+	nets := inst.clusterNetworks
+	if nets.PodCIDR == "" {
+		var err error
+		nets, err = r.clusterNetworks(ctx)
+		if err != nil {
+			return render.Inputs{}, err
+		}
+	}
+	tenantCIDRs, err := r.tenantNetworkCIDRs(ctx, inst, nets)
+	if err != nil {
+		return render.Inputs{}, err
+	}
 
 	in := render.Inputs{
 		ManagementCIDR:     r.ManagementCIDR,
 		TunnelDevice:       tunnelDevice,
 		RemoteCIDRs:        remoteCIDRs,
-		TenantNetworkCIDRs: tenantNetworkCIDRs(nets),
+		TenantNetworkCIDRs: tenantCIDRs,
 		ExternalIP:         externalIP,
 	}
 
@@ -610,7 +623,7 @@ func (r *SiteRouterReconciler) resolveInputs(ctx context.Context, inst *instance
 		}
 	}
 
-	return in
+	return in, nil
 }
 
 // configuredTunnelPeers returns the metric peer labels for every configured IPsec
@@ -645,19 +658,38 @@ func configuredBGPPeers(in render.Inputs) []string {
 // (1..4294967295, the 32-bit ASN range).
 func validASN(n int64) bool { return n >= 1 && n <= 4294967295 }
 
-// tenantNetworkCIDRs is the set of tenant-reachable cluster networks a decrypted
-// tunnel packet may be destined for — the cluster pod and service CIDRs. It feeds
-// render.Inputs.TenantNetworkCIDRs so each tunnel-ingress source-accept is
-// destination-constrained (no world egress). Empty CIDRs are skipped.
-func tenantNetworkCIDRs(nets denyset.ClusterNetworks) []string {
-	out := make([]string, 0, 2)
+// tenantNetworkCIDRs returns the destinations a decrypted tunnel packet may
+// reach: the pod CIDR plus only ClusterIPs owned by Services in this tenant
+// namespace. Using the whole cluster service CIDR would expose any platform
+// ClusterIP that the tenant baseline happens to permit.
+func (r *SiteRouterReconciler) tenantNetworkCIDRs(ctx context.Context, inst *instance, nets denyset.ClusterNetworks) ([]string, error) {
+	set := map[string]struct{}{}
 	if nets.PodCIDR != "" {
-		out = append(out, nets.PodCIDR)
+		set[nets.PodCIDR] = struct{}{}
 	}
-	if nets.ServiceCIDR != "" {
-		out = append(out, nets.ServiceCIDR)
+	services := &corev1.ServiceList{}
+	if err := r.reader().List(ctx, services, client.InNamespace(inst.namespace)); err != nil {
+		return nil, fmt.Errorf("list Services in namespace %s for tunnel destination filter: %w", inst.namespace, err)
 	}
-	return out
+	for i := range services.Items {
+		clusterIPs := services.Items[i].Spec.ClusterIPs
+		if len(clusterIPs) == 0 && services.Items[i].Spec.ClusterIP != "" {
+			clusterIPs = []string{services.Items[i].Spec.ClusterIP}
+		}
+		for _, raw := range clusterIPs {
+			addr, err := netip.ParseAddr(raw)
+			if err != nil || !addr.Is4() {
+				continue
+			}
+			set[netip.PrefixFrom(addr, addr.BitLen()).String()] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for cidr := range set {
+		out = append(out, cidr)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // discoverInterfaceDevices resolves the kernel device carrying tunnel / forwarded

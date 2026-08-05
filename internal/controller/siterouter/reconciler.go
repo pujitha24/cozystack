@@ -101,6 +101,15 @@ const (
 	// remoteCIDRsValueKey is the HelmRelease spec.values key holding the tenant's
 	// declared remote networks (the authoritative input, D7).
 	remoteCIDRsValueKey = "remoteCIDRs"
+
+	// reasonRouteConflict marks two sibling instances in one namespace declaring
+	// the same destination with different gateways.
+	reasonRouteConflict = "RouteConflict"
+
+	// routeGatewayIPAnnotation persists the gateway IP that owns this instance's
+	// namespace-route entries. The gateway pod may be gone before finalization;
+	// retaining the owner on the HelmRelease avoids unsafe dst-based guessing.
+	routeGatewayIPAnnotation = "apps.cozystack.io/site-router-route-gateway-ip"
 )
 
 // CacheByObject bounds the manager's informers. The controller only ever acts
@@ -141,11 +150,11 @@ type SiteRouterReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// APIReader is an uncached reader (mgr.GetAPIReader) used to read the
-	// cluster-wide cozystack ConfigMap and the tenant Namespace without spinning
-	// up cluster-scoped informers for ConfigMaps/Namespaces (those types are
-	// deliberately absent from CacheByObject). When nil the cached Client is used
-	// — the path unit tests take, where the fake client serves every read.
+	// APIReader is an uncached reader (mgr.GetAPIReader) used for tenant Namespace
+	// and Service reads and for cluster-network discovery (the cozystack
+	// ConfigMap, Nodes, and Services) without adding those types to CacheByObject.
+	// When nil the cached Client is used — the path unit tests take, where the fake
+	// client serves every read.
 	APIReader client.Reader
 
 	// ManagementCIDR is the source CIDR allowed to reach the VyOS management API
@@ -196,6 +205,10 @@ type instance struct {
 	// values is the decoded HelmRelease spec.values — the authoritative tenant
 	// input (D7).
 	values map[string]interface{}
+	// clusterNetworks is the deny-set snapshot resolved during validation. The
+	// config push reuses it so one reconcile cannot validate against one cluster
+	// view and render its source filter from another.
+	clusterNetworks denyset.ClusterNetworks
 	// gatewayPod is the gateway VM's virt-launcher pod, or nil if it has not been
 	// scheduled yet (a normal transient state early in an instance's life).
 	gatewayPod *corev1.Pod
@@ -304,25 +317,25 @@ func (r *SiteRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			"pod", pod.Name, "phase", pod.Status.Phase, "podIP", pod.Status.PodIP)
 	}
 
-	// Mediation pipeline, in dependency order. The ordering is load-bearing:
-	// routes must be programmed and the guest source filter must be up before port
-	// security is relaxed (D8), and the VyOS config (which installs that filter)
-	// must be pushed before we confirm it and relax the port. classify turns a
-	// soft wait/Degraded (deny-set stays a hard error) into a paced requeue.
+	// Mediation pipeline, in dependency order. Route programming precedes the
+	// guest config push, and the source filter is confirmed before the controller
+	// accepts the chart-baked port-security relaxation as operational. classify
+	// turns a soft wait/Degraded (deny-set stays a hard error) into a paced
+	// requeue.
 	if err := r.validateRemoteCIDRs(ctx, inst); err != nil { // T07: deny-set validation
-		return r.classify(ctx, err)
+		return r.classify(ctx, inst, err)
 	}
 	if err := r.programNamespaceRoutes(ctx, inst); err != nil { // T07: kube-ovn return routes
-		return r.classify(ctx, err)
+		return r.classify(ctx, inst, err)
 	}
 	if err := r.pushVyOSConfig(ctx, inst); err != nil { // T06: VyOS HTTPS API push
-		return r.classify(ctx, err)
+		return r.classify(ctx, inst, err)
 	}
 	if err := r.confirmSourceFilterActive(ctx, inst); err != nil { // T08/T06: guest source guard up
-		return r.classify(ctx, err)
+		return r.classify(ctx, inst, err)
 	}
 	if err := r.verifyGatewayPortSecurityRelaxed(ctx, inst); err != nil { // T07/R3: Ready-gated verify of the chart-baked port_security relaxation
-		return r.classify(ctx, err)
+		return r.classify(ctx, inst, err)
 	}
 	pollErr := r.pollRuntimeState(ctx, inst) // T06: tunnel/BGP observations (data for T09/T10)
 	if pollErr != nil {
@@ -339,7 +352,7 @@ func (r *SiteRouterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.updateMetrics(inst) // T10
 	}
 	if err := r.updateStatus(ctx, inst); err != nil { // T09: status surface
-		return r.classify(ctx, err)
+		return r.classify(ctx, inst, err)
 	}
 
 	// Steady-state runtime poll: re-render + re-apply on drift and refresh the
@@ -412,13 +425,11 @@ func (r *SiteRouterReconciler) reconcileDelete(ctx context.Context, inst *instan
 // denyset.ReasonInvalidRemoteCIDR, so the route is never programmed (this runs
 // before programNamespaceRoutes in the pipeline).
 //
-// The Event is the whole surface, and it is load-bearing: the returned error is a
-// HARD error, so classify stops the pipeline before updateStatus ever runs. The
+// The Warning Event is the tenant-visible reconcile surface: the returned error is
+// HARD, so classify stops the pipeline before updateStatus ever runs. The
 // primary tenant path is synchronous fail-closed admission, which rejects the
-// value at apply time — but a CIDR that becomes invalid later (a cluster network
-// reconfigure), or an apply that bypassed admission, reaches only this path, and
-// the instance's HelmRelease stays Ready while its routes are silently not
-// programmed. Without the Event that state has no explanation anywhere.
+// value at apply time. A CIDR that becomes invalid later reaches this path; the
+// controller withdraws the previously programmed route and records the Event.
 func (r *SiteRouterReconciler) validateRemoteCIDRs(ctx context.Context, inst *instance) error {
 	cidrs := stringSlice(inst.values[remoteCIDRsValueKey])
 	if len(cidrs) == 0 {
@@ -428,9 +439,16 @@ func (r *SiteRouterReconciler) validateRemoteCIDRs(ctx context.Context, inst *in
 	if err != nil {
 		return err
 	}
+	inst.clusterNetworks = clusters
 	rejections := denyset.Validate(cidrs, clusters)
 	if len(rejections) == 0 {
 		return nil
+	}
+	// A cluster change can make a previously valid remoteCIDR unsafe after its
+	// route has already been programmed. Withdraw every route owned by this
+	// gateway before returning the hard validation error.
+	if err := r.removeNamespaceRoutes(ctx, inst); err != nil {
+		return fmt.Errorf("withdraw routes rejected by the deny-set: %w", err)
 	}
 	msgs := make([]string, 0, len(rejections))
 	for _, rej := range rejections {
@@ -464,14 +482,26 @@ func (r *SiteRouterReconciler) programNamespaceRoutes(ctx context.Context, inst 
 		// No next hop yet; the pod watch re-triggers once the IP is assigned.
 		return nil
 	}
+	gatewayIP := inst.gatewayPod.Status.PodIP
+	previousGatewayIP := inst.hr.Annotations[routeGatewayIPAnnotation]
 
 	ns := &corev1.Namespace{}
 	if err := r.reader().Get(ctx, types.NamespacedName{Name: inst.namespace}, ns); err != nil {
 		return fmt.Errorf("get namespace %s: %w", inst.namespace, err)
 	}
-	merged, err := mergeRoutes(ns.Annotations[routesAnnotation], inst.gatewayPod.Status.PodIP, cidrs)
+	merged, err := mergeRoutes(ns.Annotations[routesAnnotation], gatewayIP, previousGatewayIP, cidrs)
 	if err != nil {
+		var conflict *routeConflictError
+		if errors.As(err, &conflict) {
+			if r.Recorder != nil {
+				r.Recorder.Event(inst.hr, corev1.EventTypeWarning, reasonRouteConflict, truncMsg(conflict.Error()))
+			}
+			return &reconcileError{reason: reasonRouteConflict, message: conflict.Error()}
+		}
 		return fmt.Errorf("merge routes for namespace %s: %w", inst.namespace, err)
+	}
+	if err := r.rememberRouteGatewayIP(ctx, inst, gatewayIP); err != nil {
+		return fmt.Errorf("remember route gateway IP: %w", err)
 	}
 	if ns.Annotations[routesAnnotation] == merged {
 		return nil // already programmed; nothing to apply
@@ -569,11 +599,12 @@ func (r *SiteRouterReconciler) restorePortSecurity(ctx context.Context, inst *in
 }
 
 // removeNamespaceRoutes withdraws this instance's route entries from the tenant
-// namespace annotation on delete, keyed by dst, leaving any co-tenant
-// site-router's entries intact. When the last entry is removed the annotation
-// key is dropped entirely. The withdrawal uses a single-key merge patch (the
-// namespace's other annotations are untouched); a missing namespace or absent
-// annotation is a clean no-op. Errors are returned, never masked with "|| true".
+// namespace annotation on delete, keyed by its persisted and current gateway
+// IPs, leaving any co-tenant site-router's entries intact. When the last entry is
+// removed the annotation key is dropped entirely. The withdrawal uses a
+// single-key merge patch (the namespace's other annotations are untouched); a
+// missing namespace or absent annotation is a clean no-op. Errors are returned,
+// never masked with "|| true".
 func (r *SiteRouterReconciler) removeNamespaceRoutes(ctx context.Context, inst *instance) error {
 	ns := &corev1.Namespace{}
 	if err := r.reader().Get(ctx, types.NamespacedName{Name: inst.namespace}, ns); err != nil {
@@ -587,12 +618,12 @@ func (r *SiteRouterReconciler) removeNamespaceRoutes(ctx context.Context, inst *
 		return nil
 	}
 
-	cidrs := stringSlice(inst.values[remoteCIDRsValueKey])
-	gatewayIP := ""
+	persistedGatewayIP := inst.hr.Annotations[routeGatewayIPAnnotation]
+	liveGatewayIP := ""
 	if inst.gatewayPod != nil {
-		gatewayIP = inst.gatewayPod.Status.PodIP
+		liveGatewayIP = inst.gatewayPod.Status.PodIP
 	}
-	reduced, err := removeRoutes(current, gatewayIP, cidrs)
+	reduced, err := removeRoutes(current, persistedGatewayIP, liveGatewayIP)
 	if err != nil {
 		return fmt.Errorf("remove routes for namespace %s: %w", inst.namespace, err)
 	}
@@ -610,6 +641,22 @@ func (r *SiteRouterReconciler) removeNamespaceRoutes(ctx context.Context, inst *
 		return fmt.Errorf("withdraw routes annotation on namespace %s: %w", inst.namespace, err)
 	}
 	return nil
+}
+
+// rememberRouteGatewayIP persists route ownership before the namespace route is
+// programmed. If the process stops between these writes, cleanup may find an
+// owner with no route, which is safe; a route can never be created without its
+// ownership record already existing.
+func (r *SiteRouterReconciler) rememberRouteGatewayIP(ctx context.Context, inst *instance, gatewayIP string) error {
+	if inst.hr.Annotations[routeGatewayIPAnnotation] == gatewayIP {
+		return nil
+	}
+	patch := client.MergeFrom(inst.hr.DeepCopy())
+	if inst.hr.Annotations == nil {
+		inst.hr.Annotations = map[string]string{}
+	}
+	inst.hr.Annotations[routeGatewayIPAnnotation] = gatewayIP
+	return r.Patch(ctx, inst.hr, patch)
 }
 
 // --- Discovery helpers ----------------------------------------------------
@@ -657,8 +704,7 @@ func decodeValues(hr *helmv2.HelmRelease) (map[string]interface{}, error) {
 
 // reconcileError carries a machine-readable reason alongside the human message
 // so a reason set deep in a step (e.g. denyset.ReasonInvalidRemoteCIDR) survives
-// up to Reconcile's return and, in T09, onto the instance's Ready condition. It
-// satisfies error; T09 type-asserts it to read Reason().
+// up to Reconcile's Event/log surface. It satisfies error.
 //
 // requeueAfter distinguishes a soft, self-healing wait/Degraded (a positive
 // duration: classify turns it into ctrl.Result{RequeueAfter} with a nil error, so
@@ -678,12 +724,23 @@ func (e *reconcileError) Error() string { return e.reason + ": " + e.message }
 func (e *reconcileError) Reason() string { return e.reason }
 
 // classify turns a step error into the reconcile result. A reconcileError with a
-// positive requeueAfter is a soft, event-backed wait/Degraded: requeue on that
-// cadence with no hard error (no backoff, no double-report — the failing step has
-// already recorded any Event). Everything else is a hard error the manager logs
-// and backs off on.
-func (r *SiteRouterReconciler) classify(ctx context.Context, err error) (ctrl.Result, error) {
+// positive requeueAfter is a soft wait/Degraded: requeue on that cadence with no
+// hard error. Previously silent typed waits are surfaced here as Warning Events.
+// Everything else is a hard error the manager logs and backs off on.
+func (r *SiteRouterReconciler) classify(ctx context.Context, inst *instance, err error) (ctrl.Result, error) {
+	// A pipeline failure means the prior runtime snapshot is no longer
+	// trustworthy. Delete tunnel/BGP gauges instead of freezing a stale Up value;
+	// the monotonic config-apply error counter is deliberately retained.
+	r.forgetRuntimeMetrics(inst)
+
 	var re *reconcileError
+	if errors.As(err, &re) && r.Recorder != nil {
+		switch re.reason {
+		case reasonGatewayPending, reasonPSKPending, reasonAPIKeyPending,
+			reasonTunnelAddressPending, reasonSourceFilterPending, reasonPortSecurityPending:
+			r.Recorder.Event(inst.hr, corev1.EventTypeWarning, re.reason, truncMsg(re.message))
+		}
+	}
 	if errors.As(err, &re) && re.requeueAfter > 0 {
 		log.FromContext(ctx).V(1).Info("requeueing SiteRouter reconcile",
 			"reason", re.reason, "message", re.message, "after", re.requeueAfter.String())
@@ -694,7 +751,7 @@ func (r *SiteRouterReconciler) classify(ctx context.Context, err error) (ctrl.Re
 
 // reader returns the uncached APIReader when one is wired (production), else the
 // cached Client (unit tests, where the fake client serves every read). It is
-// used for the cluster ConfigMap and tenant Namespace reads, which are
+// used for Namespace and Service reads and cluster-network discovery, which are
 // deliberately not cached (see CacheByObject).
 func (r *SiteRouterReconciler) reader() client.Reader {
 	if r.APIReader != nil {
@@ -703,22 +760,16 @@ func (r *SiteRouterReconciler) reader() client.Reader {
 	return r.Client
 }
 
-// clusterNetworks resolves the deny-set's cluster networks from the
-// cozy-system/cozystack ConfigMap via the shared denyset mapping (which applies
-// the platform-values defaults for any absent/empty key and the all-defaults set
-// when the ConfigMap is missing). The apiserver's SiteRouter admission check
-// resolves the same networks through the same helper, so a remoteCIDR is judged
+// clusterNetworks resolves the deny-set's cluster networks through the shared
+// discovery helper: stable CIDRs from the cozy-system/cozystack ConfigMap and
+// concrete node and service addresses from live objects. The apiserver's
+// SiteRouter admission check uses the same helper, so a remoteCIDR is judged
 // identically at admission and reconcile time (D10).
 func (r *SiteRouterReconciler) clusterNetworks(ctx context.Context) (denyset.ClusterNetworks, error) {
-	cm := &corev1.ConfigMap{}
-	err := r.reader().Get(ctx, types.NamespacedName{Namespace: cozystackConfigNamespace, Name: cozystackConfigName}, cm)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return denyset.ClusterNetworksFromConfigMap(nil), nil // all defaults
-		}
-		return denyset.ClusterNetworksFromConfigMap(nil), fmt.Errorf("get %s/%s ConfigMap: %w", cozystackConfigNamespace, cozystackConfigName, err)
-	}
-	return denyset.ClusterNetworksFromConfigMap(cm.Data), nil
+	return denyset.DiscoverClusterNetworks(ctx, r.reader(), types.NamespacedName{
+		Namespace: cozystackConfigNamespace,
+		Name:      cozystackConfigName,
+	})
 }
 
 // stringSlice coerces a decoded spec.values field (a []interface{} of strings

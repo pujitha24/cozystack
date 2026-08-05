@@ -204,7 +204,7 @@ func readyObjects(t *testing.T, name string, values map[string]interface{}, podI
 		gwPod("virt-launcher-"+releasePrefix+name+"-abcde", name, podIP),
 		pskSecret(name, "shared-secret"),
 		apiKeySecret(name, "api-token-xyz"),
-		tunnelService(name, "10.10.100.200"),
+		tunnelService(name, "198.51.100.200"),
 	}
 }
 
@@ -471,7 +471,7 @@ func TestReconcile_ConfigureErrorRedactsSecretStraddlingTruncateBoundary(t *test
 		gwPod(podName, "demo", "10.244.0.5"),
 		pskSecret("demo", psk),
 		apiKeySecret("demo", token),
-		tunnelService("demo", "10.10.100.200"),
+		tunnelService("demo", "198.51.100.200"),
 	}
 	r, rec := newVyOSReconciler(t, fakeV, objs...)
 
@@ -847,7 +847,12 @@ func TestReconcile_ResolveInputsMapping(t *testing.T) {
 		retrieveResult:  json.RawMessage(`{"rule":{"5":{"action":"accept"}}}`),
 		ethObservations: []vyos.EthernetObservation{{Device: "eth0", MAC: "52:54:00:00:00:01"}},
 	}
-	r, _ := newVyOSReconciler(t, fakeV, readyObjects(t, "demo", values, "10.244.0.5")...)
+	objects := readyObjects(t, "demo", values, "10.244.0.5")
+	objects = append(objects, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "tenant-api", Namespace: "tenant-test"},
+		Spec:       corev1.ServiceSpec{ClusterIP: "10.96.42.10", ClusterIPs: []string{"10.96.42.10"}},
+	})
+	r, _ := newVyOSReconciler(t, fakeV, objects...)
 
 	reconcileInstance(t, r, "demo")
 
@@ -879,6 +884,18 @@ func TestReconcile_ResolveInputsMapping(t *testing.T) {
 	}
 	if !allConstrained {
 		t.Errorf("every tunnel-ingress source-accept must be destination-constrained to a tenant network (R1), ops: %+v", ops)
+	}
+	var hasTenantService, hasWholeServiceCIDR bool
+	for _, op := range ops {
+		if op.Value == "10.96.42.10/32" {
+			hasTenantService = true
+		}
+		if op.Value == "10.96.0.0/16" {
+			hasWholeServiceCIDR = true
+		}
+	}
+	if !hasTenantService || hasWholeServiceCIDR {
+		t.Errorf("source filter must allow tenant service /32 but not the cluster-wide service CIDR, ops: %+v", ops)
 	}
 	if !opsHave(ops, rs+"/default-action", "drop") {
 		t.Errorf("expected tunnel-ingress default-action drop, ops: %+v", ops)
