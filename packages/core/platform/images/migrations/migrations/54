@@ -1,0 +1,54 @@
+#!/bin/sh
+# Migration 54 --> 55
+# Adopt every existing RedisFailover onto the freshworks-oss redis-operator's
+# group filter.
+#
+# redis-operator v3.3.5 watches RedisFailovers through a server-side label
+# selector, redis-failover.freshworks.com/operator-group=$OPERATOR_GROUP_ID
+# (OPERATOR_GROUP_ID=cozystack, set in packages/system/redis-operator). A CR
+# without that label never reaches the operator's informer at all — no event,
+# no reconcile, no error. The chart templates now stamp the label, but an
+# existing CR only receives it when its own HelmRelease next upgrades, which is
+# AFTER the operator rolls (the redis/harbor workloads dependsOn
+# cozystack.redis-operator). In that window every managed Redis runs with no
+# healing, and a CR whose HelmRelease is suspended or stuck never gets the label
+# at all. Stamp it here, ahead of the new operator, so v3.3.5 sees every CR the
+# moment it starts watching.
+#
+# NB: PR #3379 also introduces a migration 54. Whichever lands second renumbers
+# to 55 (targetVersion 56) on rebase — see review decision D2.
+
+set -euo pipefail
+
+# shellcheck source=lib/cozystack-version.sh
+. "$(dirname "$0")/lib/cozystack-version.sh"
+
+# No CRD means no redis-operator install to adopt onto (fresh cluster, or the
+# operator not yet present): nothing to label, and treating the absent resource
+# type as empty is the one case allowed to pass — unlike a real API failure,
+# which must abort rather than stamp the version on an unlabelled fleet.
+if ! kubectl get crd redisfailovers.databases.spotahome.com >/dev/null 2>&1; then
+  echo "RedisFailover CRD not present; nothing to adopt"
+  stamp_cozystack_version 55
+  exit 0
+fi
+
+# --overwrite so a re-run, or a CR already carrying the label, is a no-op. Fed
+# by heredoc rather than a pipe so a failed label aborts the migration in this
+# shell instead of only its subshell.
+rfs=$(kubectl get redisfailovers.databases.spotahome.com --all-namespaces -o json \
+  | jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name)"')
+
+if [ -n "$rfs" ]; then
+  while read -r ns name; do
+    [ -n "$ns" ] || continue
+    echo "Labelling RedisFailover ${ns}/${name} operator-group=cozystack"
+    kubectl -n "$ns" label redisfailover "$name" \
+      redis-failover.freshworks.com/operator-group=cozystack --overwrite
+  done <<EOF
+$rfs
+EOF
+fi
+
+# Stamp version
+stamp_cozystack_version 55
