@@ -424,14 +424,15 @@ spec:
                           kubePrism:
                             enabled: false
                         {{- with $.Values.talos.registryMirrors }}
-                        # Worker image-pull mirrors (machine.registries.mirrors):
-                        # route upstream registries (e.g. ghcr.io for the Talos
-                        # kubelet image) through an in-cluster pull-through cache so
-                        # worker boot does not depend on live public egress. Empty by
-                        # default (direct pulls). See cozystack/cozystack#3513.
+                        # Worker image-pull mirrors (see cozystack/cozystack#3513).
+                        # This block is emitted into the `cat <<EOF` heredoc above,
+                        # which is intentionally unquoted so the ${VARS} the Job sets
+                        # expand. registryMirrors is free-form tenant-facing input, so
+                        # its rendered value is escaped (\ $ `) to render literally and
+                        # never be shell-expanded/command-substituted at Job runtime.
                         registries:
                           mirrors:
-                            {{- toYaml . | nindent 28 }}
+                            {{- toYaml . | replace "\\" "\\\\" | replace "$" "\\$" | replace "`" "\\`" | nindent 28 }}
                         {{- end }}
                       cluster:
                         id: ${CLUSTER_ID}
