@@ -19,30 +19,57 @@
 # Runs as a pre-upgrade hook, i.e. before the new (addon-less) Kubernetes chart
 # reaches the tenant HelmReleases, so the finalizer is removed before any
 # pruning can fire.
+#
+# Fail-closed. Removing the finalizer is the ONLY thing that keeps the delete
+# below from triggering a Helm uninstall inside the tenant. Migrations never
+# re-run, so a swallowed error here would stamp the version on a half-orphaned
+# fleet and never look back. Every critical step therefore runs under
+# `set -euo pipefail` with no `|| true`, and the delete is gated on the
+# finalizer actually being gone: if anything fails the migration stops
+# (recoverable) rather than deleting a still-finalized object (not).
 
-set -eu
+set -euo pipefail
 
 # shellcheck source=lib/cozystack-version.sh
 . "$(dirname "$0")/lib/cozystack-version.sh"
 
 # The addon HelmReleases are the only ones referencing these ExternalArtifact
 # charts, so match on chartRef.name to select them across every tenant namespace.
-hrs=$(kubectl get helmreleases.helm.toolkit.fluxcd.io --all-namespaces -o json 2>/dev/null \
+# No `|| true`: a failed list must stop the migration, not silently proceed to
+# stamp the version on a fleet we never actually inspected.
+hrs=$(kubectl get helmreleases.helm.toolkit.fluxcd.io --all-namespaces -o json \
   | jq -r '.items[]
       | select(.spec.chartRef.name == "cozystack-kubernetes-application-kubevirt-kubernetes-fluxcd"
             or .spec.chartRef.name == "cozystack-kubernetes-application-kubevirt-kubernetes-fluxcd-operator")
-      | "\(.metadata.namespace) \(.metadata.name)"' || true)
+      | "\(.metadata.namespace) \(.metadata.name)"')
 
+# Feed the loop with a heredoc, not a pipe, so it runs in this shell and an
+# `exit 1` below aborts the whole migration instead of only its subshell.
 if [ -n "$hrs" ]; then
-  printf '%s\n' "$hrs" | while read -r ns name; do
+  while read -r ns name; do
     [ -n "$ns" ] || continue
     echo "Orphaning FluxCD addon HelmRelease ${ns}/${name}"
+    # Suspend so Flux stops reconciling while we detach the finalizer.
     kubectl -n "$ns" patch helmrelease "$name" --type=merge \
-      -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+      -p '{"spec":{"suspend":true}}'
+    # Drop the Flux finalizer. Not best-effort: this is what makes the delete
+    # inert, so a failure here must abort (set -e), never fall through to delete.
     kubectl -n "$ns" patch helmrelease "$name" --type=merge \
-      -p '{"metadata":{"finalizers":null}}' 2>/dev/null || true
-    kubectl -n "$ns" delete helmrelease "$name" --ignore-not-found --wait=false || true
-  done
+      -p '{"metadata":{"finalizers":null}}'
+    # Verify the finalizer is actually gone before deleting. If the patch was
+    # rejected (webhook, RBAC, conflict, transient apiserver error) the object
+    # still carries it, and deleting now would set a deletionTimestamp that makes
+    # helm-controller run the very uninstall this migration exists to avoid.
+    remaining=$(kubectl -n "$ns" get helmrelease "$name" \
+      -o jsonpath='{.metadata.finalizers}' 2>/dev/null || true)
+    if [ -n "$remaining" ]; then
+      echo "ERROR: finalizer still present on ${ns}/${name} after patch (${remaining}); refusing to delete" >&2
+      exit 1
+    fi
+    kubectl -n "$ns" delete helmrelease "$name" --ignore-not-found --wait=false
+  done <<EOF
+$hrs
+EOF
 fi
 
 # Stamp version
