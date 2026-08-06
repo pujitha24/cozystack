@@ -423,6 +423,16 @@ spec:
                           rbac: true
                           kubePrism:
                             enabled: false
+                        {{- with $.Values.talos.registryMirrors }}
+                        # Worker image-pull mirrors (machine.registries.mirrors):
+                        # route upstream registries (e.g. ghcr.io for the Talos
+                        # kubelet image) through an in-cluster pull-through cache so
+                        # worker boot does not depend on live public egress. Empty by
+                        # default (direct pulls). See cozystack/cozystack#3513.
+                        registries:
+                          mirrors:
+                            {{- toYaml . | nindent 28 }}
+                        {{- end }}
                       cluster:
                         id: ${CLUSTER_ID}
                         secret: ${CLUSTER_SECRET}
