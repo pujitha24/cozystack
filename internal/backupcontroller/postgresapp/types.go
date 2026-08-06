@@ -78,8 +78,16 @@ type Bootstrap struct {
 }
 
 type Backup struct {
-	DestinationPath     string              `json:"destinationPath,omitempty"`
-	EndpointURL         string              `json:"endpointURL,omitempty"`
+	DestinationPath string `json:"destinationPath,omitempty"`
+	EndpointURL     string `json:"endpointURL,omitempty"`
+	// UseSystemBucket deliberately omits `omitempty`. On restore the driver
+	// must flip a server-side `useSystemBucket: true` back to false, and a
+	// JSON merge patch only overwrites a field it actually serialises: with
+	// omitempty the false zero-value would be dropped from the patch, the
+	// server's true would survive, and the chart's
+	// `bootstrap.enabled + useSystemBucket` guard would fail the render
+	// forever (issue #3327). Keeping the field in the patch overwrites it.
+	UseSystemBucket     bool                `json:"useSystemBucket"`
 	S3AccessKey         string              `json:"s3AccessKey,omitempty"`
 	S3SecretKey         string              `json:"s3SecretKey,omitempty"`
 	S3CredentialsSecret S3CredentialsSecret `json:"s3CredentialsSecret,omitempty"`

@@ -1102,6 +1102,19 @@ func buildPostgresAppRestorePatch(
 
 	patched.Spec.Backup.DestinationPath = sourceDestinationPath
 	patched.Spec.Backup.EndpointURL = sourceEndpointURL
+	// Force the explicit-coordinates (legacy) backup flow. The patch above
+	// writes destinationPath/endpointURL/s3CredentialsSecret straight onto
+	// the CR, which is exactly the input the chart's bootstrap.recovery +
+	// externalClusters block needs. But if the target app was created with
+	// backup.useSystemBucket=true (the platform-recommended flow), that flag
+	// still lives server-side, and the chart fails the render on the
+	// `bootstrap.enabled + useSystemBucket` guard, so the HelmRelease never
+	// re-renders bootstrap.recovery and the restore can never converge
+	// (issue #3327). Clearing it here hands the chart a self-consistent set
+	// of values: explicit coordinates, no system-bucket flag, recovery on.
+	// (postgresapp.Backup.UseSystemBucket omits `omitempty` so this false
+	// survives into the merge patch and actually overwrites the server value.)
+	patched.Spec.Backup.UseSystemBucket = false
 	// Switching to s3CredentialsSecret means inline keys must not survive
 	// on the CR .spec; otherwise tenants who switch credential modes leave
 	// cleartext keys behind in etcd and audit logs.
