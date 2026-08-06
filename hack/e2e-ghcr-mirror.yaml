@@ -62,6 +62,18 @@ spec:
       labels:
         app.kubernetes.io/name: ghcr-mirror
     spec:
+      # No API access is needed; do not mount a ServiceAccount token.
+      automountServiceAccountToken: false
+      # Run unprivileged and PSS-restricted. fsGroup makes the emptyDir cache and
+      # tmp volumes group-writable so the non-root user can write them under a
+      # read-only root filesystem.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: registry
           # registry:2 as a pull-through cache. Digest-pin and/or preload in CI so
@@ -91,11 +103,24 @@ spec:
               memory: 64Mi
             limits:
               memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
           volumeMounts:
             - name: cache
               mountPath: /var/lib/registry
+            # readOnlyRootFilesystem: give the registry a writable scratch dir for
+            # any temp it touches outside its storage rootdirectory.
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: cache
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
 ---
 # CI-only: allow tenant worker VM Pods to reach the mirror.

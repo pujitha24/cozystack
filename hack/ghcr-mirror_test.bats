@@ -86,6 +86,18 @@
     printf '%s\n' "$out" | grep -qx '          - http://ghcr-mirror.kube-system.svc' || { echo "endpoint missing/misindented" >&2; exit 1; }
 }
 
+@test "registry Deployment runs PSS-restricted (non-root, no priv-esc, dropped caps, RO rootfs, no SA token)" {
+    manifest=hack/e2e-ghcr-mirror.yaml
+    d='select(.kind == "Deployment")'
+    [ "$(yq "$d | .spec.template.spec.automountServiceAccountToken" "$manifest")" = "false" ]
+    [ "$(yq "$d | .spec.template.spec.securityContext.runAsNonRoot" "$manifest")" = "true" ]
+    [ "$(yq "$d | .spec.template.spec.securityContext.seccompProfile.type" "$manifest")" = "RuntimeDefault" ]
+    c='.spec.template.spec.containers[0].securityContext'
+    [ "$(yq "$d | $c.allowPrivilegeEscalation" "$manifest")" = "false" ]
+    [ "$(yq "$d | $c.readOnlyRootFilesystem" "$manifest")" = "true" ]
+    [ "$(yq "$d | $c.capabilities.drop[0]" "$manifest")" = "ALL" ]
+}
+
 @test "the manifest and helper agree on the mirror Service DNS name" {
     manifest=hack/e2e-ghcr-mirror.yaml
     helper=hack/e2e-chainsaw/_lib/ghcr-mirror.sh
