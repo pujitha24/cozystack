@@ -48,18 +48,40 @@ resolve_ghcr_mirror_endpoint() {
     cat "$_GHCR_MIRROR_DECISION_FILE"
     return 0
   fi
-  local endpoint=""
-  if kubectl -n kube-system get deploy ghcr-mirror >/dev/null 2>&1; then
-    if kubectl -n kube-system rollout status deploy/ghcr-mirror --timeout=5m >/dev/null 2>&1; then
-      _apply_ghcr_mirror_egress_policy || true
+  local endpoint="" cache=1 out rc
+  # One `get deploy` serves both the existence check and the not-deployed-vs-error
+  # split: a genuine NotFound is a stable decision worth caching, but any other
+  # failure (transient apiserver blip) must NOT be cached, or one blip would
+  # disable the mirror for every later test in the shared sandbox.
+  out=$(kubectl -n kube-system get deploy ghcr-mirror 2>&1); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$out" in
+      *NotFound*|*"not found"*)
+        echo "ghcr-mirror not deployed -- tenant workers pull ghcr.io directly" >&2 ;;
+      *)
+        echo "WARNING: could not query ghcr-mirror Deployment (transient); not caching, will retry" >&2
+        cache=0 ;;
+    esac
+  elif kubectl -n kube-system rollout status deploy/ghcr-mirror --timeout=5m >/dev/null 2>&1; then
+    # Only commit the endpoint once the tenant egress allow is actually in place.
+    # The mirror is a kube-system ClusterIP that the tenant default-deny egress
+    # drops without this allow; pointing workers at it when the policy did not
+    # apply just adds dial-timeout latency before Talos falls back. Leaving the
+    # endpoint empty keeps the "can only help, never make CI worse" invariant.
+    if _apply_ghcr_mirror_egress_policy; then
       endpoint="$GHCR_MIRROR_SVC_URL"
-      echo "ghcr-mirror pull-through registry ready -- tenant workers mirror ghcr.io via ${endpoint}" >&2
+      echo "ghcr-mirror ready and egress allow applied -- tenant workers mirror ghcr.io via ${endpoint}" >&2
     else
-      echo "WARNING: ghcr-mirror not Available in time -- tenant workers pull ghcr.io directly" >&2
+      echo "WARNING: ghcr-mirror ready but its egress allow failed to apply -- tenant workers pull ghcr.io directly" >&2
     fi
   else
-    echo "ghcr-mirror not deployed -- tenant workers pull ghcr.io directly" >&2
+    echo "WARNING: ghcr-mirror not Available in time -- tenant workers pull ghcr.io directly" >&2
   fi
-  printf '%s' "$endpoint" > "$_GHCR_MIRROR_DECISION_FILE"
+  # Cache atomically (temp + mv) so a concurrent reader in the shared sandbox never
+  # sees a half-written decision file.
+  if [ "$cache" -eq 1 ]; then
+    printf '%s' "$endpoint" > "${_GHCR_MIRROR_DECISION_FILE}.tmp" \
+      && mv "${_GHCR_MIRROR_DECISION_FILE}.tmp" "$_GHCR_MIRROR_DECISION_FILE"
+  fi
   printf '%s' "$endpoint"
 }
