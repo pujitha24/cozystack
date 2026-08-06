@@ -2551,7 +2551,7 @@ STUB
   # converted: all of them are owned by other branches, and a conflict there costs
   # more than an uncovered trap. What the freeze buys is that none of this arrived
   # silently.
-  frozen='build-matrix_test.bats=14 capture-dataplane.bats=1 e2e-test-openapi.bats=1 multus-install-cni-plugins.bats=12 nightly-mirror_test.bats=5 overlay-main-images_test.bats=11 release-changelog-behaviour.bats=9 release-changelog-contract.bats=1 run-kubernetes-talos-diagnostics_test.bats=8 select-e2e_test.bats=15 '
+  frozen='build-matrix_test.bats=14 capture-dataplane.bats=1 e2e-test-openapi.bats=1 multus-install-cni-plugins.bats=12 nightly-mirror_test.bats=5 overlay-main-images_test.bats=11 release-changelog-behaviour.bats=9 release-changelog-contract.bats=1 run-kubernetes-talos-diagnostics_test.bats=8 '
 
   found=""
   for f in "$HACK_DIR"/*.bats; do
@@ -2560,7 +2560,8 @@ STUB
       cozyreport.bats | cozyreport-talos.bats | capture-previous-logs.bats \
         | admin-kubeconfig-invariant.bats | check-gpu-operator-variants.bats \
         | check-gpu-recording-rules.bats | check-host-runtime.bats \
-        | promote-retag_test.bats | remediation-guard.bats | select-install_test.bats) continue ;;
+        | promote-retag_test.bats | remediation-guard.bats | select-install_test.bats \
+        | select-e2e_test.bats) continue ;;
     esac
     # `|| true`: grep -c exits 1 on a count of zero, and every already-clean file
     # hits that -- under set -e the guard would die on the first one and never
@@ -2608,7 +2609,8 @@ STUB
   for f in cozyreport.bats cozyreport-talos.bats capture-previous-logs.bats \
            admin-kubeconfig-invariant.bats check-gpu-operator-variants.bats \
            check-gpu-recording-rules.bats check-host-runtime.bats \
-           promote-retag_test.bats remediation-guard.bats select-install_test.bats; do
+           promote-retag_test.bats remediation-guard.bats select-install_test.bats \
+           select-e2e_test.bats; do
     [ -f "$HACK_DIR/$f" ] || { echo "FAIL: $f is on the list but not in the tree"; false; }
     # Folded, not per line: `trap 'rm -rf "$tmp"' \` followed by `EXIT` on the
     # next line is a working EXIT trap that no single-line pattern matches, and

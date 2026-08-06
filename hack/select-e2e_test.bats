@@ -8,6 +8,13 @@
 # non-zero on failure. setup()/teardown() are not honored — each test creates
 # and cleans its own scratch dir.
 #
+# That cleanup is the last statement of the body, never a `trap ... EXIT`, which
+# docs/agents/e2e-testing.md bans in hack/*.bats: under the real bats binary such
+# a trap replaces the one bats installs for its own bookkeeping, and a test that
+# then fails prints no TAP line at all — it disappears rather than reporting
+# `not ok`. Both runners set -e, so on a failure the cleanup is unreachable and
+# the scratch dir is left behind to inspect, which is what a failed test wants.
+#
 # "Full suite" is asserted as an exact match against the suite list derived the
 # same way select-e2e.sh derives it, not as a count: a threshold like `-gt 5`
 # passes just as happily on a wrong set that happens to be large, and did hide
@@ -18,11 +25,11 @@
 
 @test "single app diff selects only that suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "packages/apps/postgres/values.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "postgres" ]
+    rm -rf "$tmp"
 }
 
 @test "engine-dependency change does not fan out via the ordering edge" {
@@ -33,7 +40,6 @@
     # genuine direct dependents (postgres, harbor, ...), never unrelated apps
     # like kafka that reach cert-manager solely through the engine.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "packages/system/cert-manager/values.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
@@ -43,40 +49,40 @@
         echo "cert-manager change must not fan out via engine; got: $output" >&2
         exit 1
     fi
+    rm -rf "$tmp"
 }
 
 @test "networking change triggers full suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "packages/system/cilium/values.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "library change triggers full suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "packages/library/cozy-lib/templates/_helpers.tpl" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "docs-only diff selects nothing" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "docs/README.md" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ -z "$output" ]
+    rm -rf "$tmp"
 }
 
 @test "kubernetes-application maps to the four kubernetes suites" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "packages/apps/kubernetes/values.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
@@ -86,82 +92,83 @@
     # chart-only change must select them too.
     echo "$output" | grep -q "kubernetes-oidc-system"
     echo "$output" | grep -q "kubernetes-oidc-customconfig"
+    rm -rf "$tmp"
 }
 
 @test "dashboards-only diff selects nothing (path is plural)" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "dashboards/gpu/gpu-fleet.json" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ -z "$output" ]
+    rm -rf "$tmp"
 }
 
 @test "shared E2E helper script triggers full suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "hack/e2e-chainsaw/_lib/run-kubernetes.sh" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "chainsaw config change triggers full suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "hack/e2e-chainsaw/.chainsaw.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "install bats triggers full suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "hack/e2e-install-cozystack.bats" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "per-suite edit selects only that suite, never escalates" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "hack/e2e-chainsaw/redis/chainsaw-test.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "redis" ]
+    rm -rf "$tmp"
 }
 
 @test "pull-requests workflow change triggers full suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo ".github/workflows/pull-requests.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "backup example harness edit selects its app suite" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "examples/backups/postgres/run-all.sh" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "postgres" ]
+    rm -rf "$tmp"
 }
 
 @test "backup example without a matching suite selects nothing" {
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "examples/backups/no-such-app/run.sh" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources") || true
     [ -z "$output" ]
+    rm -rf "$tmp"
 }
 
 @test "a package covered by no suite escalates despite other selections" {
@@ -172,7 +179,6 @@
     # component and adjust e2e nearby" PR — must not narrow the run down to
     # that one suite.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     # Guard the premise: if the package ever leaves the graph it escalates as an
     # unrecognised packages/ path instead, and this test would pass vacuously.
@@ -187,6 +193,7 @@
         echo "per-suite edit swallowed the full-suite escalation; got: $output" >&2
         exit 1
     fi
+    rm -rf "$tmp"
 }
 
 @test "escalation also survives another package that does select suites" {
@@ -194,23 +201,23 @@
     # contributing a suite name used to hide it, a second packages/ path
     # included.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     printf 'packages/system/cozystack-basics/templates/ingress-hostname-policy.yaml\npackages/apps/postgres/values.yaml\n' > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "two covered packages still narrow to their own suites" {
     # The escalation loop is the code that can over-escalate; pin the negative
     # direction so a path that is covered never drags the full suite in.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     printf 'packages/apps/postgres/values.yaml\npackages/apps/redis/values.yaml\n' > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "postgres redis" ]
+    rm -rf "$tmp"
 }
 
 @test "a path owned by several sources counts as covered if any one is" {
@@ -221,7 +228,6 @@
     # this must narrow rather than escalate on the monitoring half — and it must
     # not fan out to unrelated suites like kafka either.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     # Guard the premise. Filter outside yq: a trailing `| $n` re-emits the
     # binding whether or not the select() matched, so counting that way returns
@@ -235,6 +241,7 @@
     echo "packages/system/postgres-operator/values.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "harbor postgres" ]
+    rm -rf "$tmp"
 }
 
 @test "an edit to a switched-off suite is ignored" {
@@ -243,7 +250,6 @@
     # select nothing on its own — and must not distort what the rest of the diff
     # selects either.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     [ ! -f hack/e2e-chainsaw/backup/chainsaw-test.yaml ]
     [ -f hack/e2e-chainsaw/backup/chainsaw-test.yaml.disabled ]
@@ -253,6 +259,7 @@
     echo "packages/apps/postgres/values.yaml" >> "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "postgres" ]
+    rm -rf "$tmp"
 }
 
 @test "an edit to a non-suite directory under e2e-chainsaw escalates" {
@@ -261,13 +268,13 @@
     # all_apps — selecting nothing for it would skip E2E outright, so it
     # escalates instead.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     full=$(find hack/e2e-chainsaw -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | sed -e 's,^hack/e2e-chainsaw/,,' -e 's,/chainsaw-test\.yaml$,,' | sort | paste -sd ' ' -)
     [ ! -d hack/e2e-chainsaw/_fixtures ]
     echo "hack/e2e-chainsaw/_fixtures/tenant.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "$full" ]
+    rm -rf "$tmp"
 }
 
 @test "a suite owned by a non-application source is reachable from its package" {
@@ -276,7 +283,6 @@
     # All three map through src_to_suites, so a change to their package selects
     # that suite instead of escalating the whole run.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     echo "packages/system/kuberture/values.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
@@ -287,6 +293,7 @@
     echo "packages/system/external-dns/values.yaml" > "$tmp/diff"
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources")
     [ "$output" = "external-dns" ]
+    rm -rf "$tmp"
 }
 
 @test "every suite round-trips between the two mapping tables" {
@@ -317,7 +324,6 @@
     # "skip E2E". A discovery that comes up empty would therefore turn each
     # fail-safe into its opposite, silently, behind a green run.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     mkdir -p "$tmp/nosuites" "$tmp/nosources"
     cp hack/select-e2e.sh "$tmp/nosuites/"
@@ -338,6 +344,7 @@
     rc=0
     hack/select-e2e.sh "$tmp/diff" "$tmp/nopaths" >/dev/null 2>&1 || rc=$?
     [ "$rc" -ne 0 ]
+    rm -rf "$tmp"
 }
 
 @test "a source graph yq cannot read in full fails instead of selecting from the part it read" {
@@ -348,7 +355,6 @@
     # dependents, and the path still resolves to some suite, so it narrows the
     # run with nothing to say it happened.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
     cp -r packages/core/platform/sources "$tmp/sources"
     # Sorts last, so the glob hands yq every valid source first and it has
     # already emitted most of the index by the time it fails.
@@ -358,6 +364,7 @@
     output=$(hack/select-e2e.sh "$tmp/diff" "$tmp/sources" 2>/dev/null) || rc=$?
     [ "$rc" -ne 0 ]
     [ -z "$output" ]
+    rm -rf "$tmp"
 }
 
 @test "resolve_suites still has exactly one call site" {
