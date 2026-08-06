@@ -424,14 +424,9 @@ spec:
                           kubePrism:
                             enabled: false
                         {{- with $.Values.talos.registryMirrors }}
-                        # Worker image-pull mirrors (see cozystack/cozystack#3513).
-                        # This block is emitted into the `cat <<EOF` heredoc above,
-                        # which is intentionally unquoted so the ${VARS} the Job sets
-                        # expand. registryMirrors is free-form tenant-facing input, so
-                        # its rendered value is escaped (\ $ `) to render literally and
-                        # never be shell-expanded/command-substituted at Job runtime.
                         registries:
                           mirrors:
+                            {{- /* registryMirrors is free-form tenant-facing input rendered into the unquoted reconcile-Job heredoc above, so the value is escaped (backslash, dollar, backtick) to render as a literal and never be shell-expanded or command-substituted at Job runtime. This is a Helm comment: it is stripped at render, so its own text never reaches the heredoc. See cozystack cozystack#3513. */}}
                             {{- toYaml . | replace "\\" "\\\\" | replace "$" "\\$" | replace "`" "\\`" | nindent 28 }}
                         {{- end }}
                       cluster:
