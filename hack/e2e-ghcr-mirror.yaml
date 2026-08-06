@@ -76,9 +76,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: registry
-          # registry:2 as a pull-through cache. Digest-pin and/or preload in CI so
-          # the mirror's own image is not a fresh flaky pull (see assumption 1).
-          image: docker.io/library/registry:2.8.3
+          # registry:2 as a pull-through cache. Pulled from mirror.gcr.io and
+          # digest-pinned (as every other hack/ helper manifest does) so the
+          # mirror's own image is not a fresh anonymous Docker Hub pull -- the very
+          # flaky-egress dependency this PR exists to remove.
+          image: mirror.gcr.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
           env:
             # Pull-through cache: proxy every request to ghcr.io and cache locally.
             - name: REGISTRY_PROXY_REMOTEURL
@@ -101,8 +103,13 @@ spec:
             requests:
               cpu: 50m
               memory: 64Mi
+              ephemeral-storage: 100Mi
             limits:
               memory: 512Mi
+              # Bounds the container writable layer plus the cache/tmp emptyDirs
+              # below, so a runaway cache cannot fill node-local storage and evict
+              # unrelated Pods. Sized for the CI image set (kubelet + a few).
+              ephemeral-storage: 3Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -119,9 +126,11 @@ spec:
               mountPath: /tmp
       volumes:
         - name: cache
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 2Gi
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 256Mi
 ---
 # CI-only: allow tenant worker VM Pods to reach the mirror.
 #
