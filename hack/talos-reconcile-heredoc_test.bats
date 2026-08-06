@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # -----------------------------------------------------------------------------
-# Execution-level regression test for the worker TalosConfigTemplate heredoc
-# (cozystack/cozystack#3513, #3575 review).
+# Execution-level regression test for the worker TalosConfigTemplate heredoc:
+# it pins that the reconcile Job's unquoted heredoc still emits a valid config
+# when talos.registryMirrors carries hostile free-form input (and by default).
 #
 # The reconcile Job applies the TalosConfigTemplate via an UNQUOTED
 # `cat <<EOF | kubectl apply -f -` heredoc, so every line of its body is subject
