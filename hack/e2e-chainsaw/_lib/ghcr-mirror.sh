@@ -53,7 +53,17 @@ resolve_ghcr_mirror_endpoint() {
   # split: a genuine NotFound is a stable decision worth caching, but any other
   # failure (transient apiserver blip) must NOT be cached, or one blip would
   # disable the mirror for every later test in the shared sandbox.
-  out=$(kubectl -n kube-system get deploy ghcr-mirror 2>&1); rc=$?
+  #
+  # Capture inside `if` (not a bare `out=$(...); rc=$?`): the chainsaw suites run
+  # this script under `sh -c` with `set -eu`, and dash inherits errexit into a
+  # command substitution, so a non-zero kubectl in a bare assignment would kill
+  # the script before either fallback branch runs. bash does not inherit it,
+  # which is why a bare assignment survives locally but not in CI.
+  if out=$(kubectl -n kube-system get deploy ghcr-mirror 2>&1); then
+    rc=0
+  else
+    rc=$?
+  fi
   if [ "$rc" -ne 0 ]; then
     case "$out" in
       *NotFound*|*"not found"*)
