@@ -86,7 +86,7 @@ STUB
     chmod +x "$1/bin/kubectl"
 }
 
-@test "both guards are wired into the run, before the snapshot trap is disarmed" {
+@test "the guard is wired into the run, before the snapshot trap is disarmed" {
     lib=hack/e2e-chainsaw/_lib/run-kubernetes.sh
     # Everything else here tests the guards in isolation, which says nothing
     # about whether the run still calls them: delete both invocations and every
@@ -95,25 +95,82 @@ STUB
     # trap, so a guard that fired after `trap - EXIT` would report the teardown
     # with the cluster state already gone. Same shape as the ordering pin in
     # hack/run-kubernetes-schedulable_test.bats.
-    parent=$(grep -n 'cozy_guard_helmrelease tenant-test' "$lib" | head -n 1 | cut -d: -f1)
-    addons=$(grep -n 'cozy_guard_addon_helmreleases tenant-test' "$lib" | head -n 1 | cut -d: -f1)
+    # The arguments are pinned, not only the call. The addon prefix is derived
+    # from the parent name inside the guard, so naming a different release here
+    # would select a different set of addons and still read as wired.
+    call=$(grep -n -F 'cozy_guard_all_helmreleases tenant-test "kubernetes-${test_name}"' "$lib" | head -n 1 | cut -d: -f1)
     disarm=$(grep -n '^  trap - EXIT' "$lib" | head -n 1 | cut -d: -f1)
-    if [ -z "$parent" ]; then
-        echo "expected run_kubernetes_test to guard the parent HelmRelease" >&2
-        exit 1
-    fi
-    if [ -z "$addons" ]; then
-        echo "expected run_kubernetes_test to guard the addon HelmReleases" >&2
+    if [ -z "$call" ]; then
+        echo "expected run_kubernetes_test to guard the parent HelmRelease and its addons" >&2
         exit 1
     fi
     if [ -z "$disarm" ]; then
         echo "expected to find the tenant-snapshot trap being disarmed in $lib" >&2
         exit 1
     fi
-    if [ "$parent" -ge "$disarm" ] || [ "$addons" -ge "$disarm" ]; then
-        echo "expected both guards (lines $parent, $addons) before the trap is disarmed (line $disarm)" >&2
+    if [ "$call" -ge "$disarm" ]; then
+        echo "expected the guard (line $call) before the trap is disarmed (line $disarm)" >&2
         exit 1
     fi
+}
+
+@test "a failing parent still leaves every addon inspected" {
+    # Two bare calls under errexit would end the script on the parent's verdict
+    # and read no addon at all. The addon output is the context that explains a
+    # parent failure, which is the same reason the addon loop keeps going after
+    # one of its own fails. Parent here is torn down under RetryOnFailure, which
+    # is fatal; the addon carries a failed Snapshot, which is a note. Both have
+    # to appear, and the verdict has to stay non-zero.
+    . hack/e2e-chainsaw/_lib/run-kubernetes.sh
+    tmp=$(mktemp -d)
+    cozy_make_kubectl_stub "$tmp"
+    export FIXTURES="$tmp/fixtures"
+    printf 'kubernetes-test-latest-version-coredns\n' > "$FIXTURES/ALL_HR"
+    printf 'RetryOnFailure' > "$FIXTURES/kubernetes-test-latest-version.strategy"
+    printf 'uninstalled\ndeployed\n' > "$FIXTURES/kubernetes-test-latest-version.history"
+    printf 'failed\ndeployed\n' > "$FIXTURES/kubernetes-test-latest-version-coredns.history"
+
+    rc=0
+    out=$(PATH="$tmp/bin:$PATH" cozy_guard_all_helmreleases tenant-test kubernetes-test-latest-version 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "expected the run to fail on the torn-down parent, got: $out" >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$out" | grep -q 'was uninstalled and reinstalled, though its install strategy is RetryOnFailure'; then
+        echo "expected the parent teardown to be reported, got: $out" >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$out" | grep -q 'NOTE: kubernetes-test-latest-version-coredns carries a failed Snapshot'; then
+        echo "expected the addon to still be inspected after the parent failed, got: $out" >&2
+        exit 1
+    fi
+
+    rm -rf "$tmp"
+}
+
+@test "an addon teardown alone still fails the run" {
+    # The composite carries two verdicts and the addons' has to survive on its
+    # own. With the parent clean, dropping the addon guard's contribution -
+    # trading its collection for a bare || true - leaves every other case in
+    # this file green, so the second verdict needs its own pin.
+    . hack/e2e-chainsaw/_lib/run-kubernetes.sh
+    tmp=$(mktemp -d)
+    cozy_make_kubectl_stub "$tmp"
+    export FIXTURES="$tmp/fixtures"
+    printf 'kubernetes-test-latest-version-cilium\n' > "$FIXTURES/ALL_HR"
+    printf 'RetryOnFailure' > "$FIXTURES/kubernetes-test-latest-version.strategy"
+    printf 'deployed\n' > "$FIXTURES/kubernetes-test-latest-version.history"
+    printf 'RetryOnFailure' > "$FIXTURES/kubernetes-test-latest-version-cilium.strategy"
+    printf 'uninstalled\ndeployed\n' > "$FIXTURES/kubernetes-test-latest-version-cilium.history"
+
+    rc=0
+    out=$(PATH="$tmp/bin:$PATH" cozy_guard_all_helmreleases tenant-test kubernetes-test-latest-version 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "expected the torn-down addon alone to fail the run, got: $out" >&2
+        exit 1
+    fi
+
+    rm -rf "$tmp"
 }
 
 @test "single-release guard passes a release that failed and recovered" {

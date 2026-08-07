@@ -800,6 +800,33 @@ cozy_guard_addon_helmreleases() {
   return "${_failed}"
 }
 
+# Judge a parent release and the addons it installs, and report both verdicts.
+# $1 is the namespace, $2 the parent release name.
+#
+# Neither call may suppress the other, which is why the run does not simply
+# issue them back to back: the caller runs under errexit, so a non-zero parent
+# verdict would end the script before any addon was read. The run would still go
+# red, so nothing is lost about WHETHER it failed - what is lost is the addon
+# output that explains it, which is the same context the loop above preserves
+# among the addons themselves and for the same reason. The case that costs most
+# is a change in the Flux status shape, because it reaches every release alike:
+# the parent trips on it first and no addon is ever looked at.
+#
+# Collecting into _failed rather than returning early is load-bearing twice
+# over: it keeps the addons being read after the parent fails, and it keeps the
+# parent's own verdict, which an early return past the addons would drop.
+#
+# The addon prefix is derived here rather than passed in, so the parent name and
+# the prefix that selects its children cannot drift apart.
+cozy_guard_all_helmreleases() {
+  local _ns="$1"
+  local _parent="$2"
+  local _failed=0
+  cozy_guard_helmrelease "$_ns" "${_parent}" || _failed=1
+  cozy_guard_addon_helmreleases "$_ns" "${_parent}-" || _failed=1
+  return "${_failed}"
+}
+
 run_kubernetes_test() {
     local version_expr="$1"
     local test_name="$2"
@@ -1647,11 +1674,13 @@ EOF
   # plus the empty-history check inside the guard, which is what reports a Flux
   # status shape the helper can no longer read.
   #
-  # Both calls run before the EXIT trap is disarmed, so a teardown either one
-  # finds still captures the tenant snapshot. That ordering is pinned by
-  # hack/run-kubernetes-remediation_test.bats, along with the calls themselves.
-  cozy_guard_helmrelease tenant-test "kubernetes-${test_name}"
-  cozy_guard_addon_helmreleases tenant-test "kubernetes-${test_name}-"
+  # The call runs before the EXIT trap is disarmed, so a teardown it finds still
+  # captures the tenant snapshot. That ordering is pinned by
+  # hack/run-kubernetes-remediation_test.bats, along with the call itself.
+  # cozy_guard_all_helmreleases judges the parent and the addons and reports
+  # both verdicts rather than stopping at the parent's; see its comment for why
+  # that matters under errexit.
+  cozy_guard_all_helmreleases tenant-test "kubernetes-${test_name}"
 
   # Success: disarm the tenant-snapshot trap so it doesn't fire on the clean exit.
   trap - EXIT
