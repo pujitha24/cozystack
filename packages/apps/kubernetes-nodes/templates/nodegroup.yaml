@@ -131,6 +131,8 @@ spec:
               sockets: 1
             {{- end }}
             devices:
+              {{- /* TEMPORARY diagnostic (Refs #3513): log the worker VM serial console so Talos early-boot output (before apid :50000 comes up) reaches cozyreport. When a worker stalls pre-apid the talosctl-based talos-diagnostics Job captures nothing; the serial console is the only window into that stall. Kept in lockstep with the parent kubernetes chart for render-parity. Revert before merge. */}}
+              logSerialConsole: true
               {{- if .group.gpus }}
               gpus:
               {{- range $i, $gpu := .group.gpus }}
