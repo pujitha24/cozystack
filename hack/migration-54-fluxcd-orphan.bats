@@ -97,6 +97,7 @@ run_migration() {
     -e FAKE_PATCH_FAIL="${FAKE_PATCH_FAIL-}" \
     -e FAKE_DELETE_FAIL="${FAKE_DELETE_FAIL-}" \
     -e FAKE_FINALIZER_STICKS="${FAKE_FINALIZER_STICKS-}" \
+    -e FAKE_VERIFY_READ_FAIL="${FAKE_VERIFY_READ_FAIL-}" \
     "$TESTIMG" "/migrations/$1" || _run_migration_rc=$?
   return "$_run_migration_rc"
 }
@@ -122,7 +123,7 @@ DOCKERFILE
   : > "$FAKE_CMDLOG"
   export NAMESPACE=cozy-system
   export FAKE_HRS=""
-  unset FAKE_LIST_FAIL FAKE_PATCH_FAIL FAKE_DELETE_FAIL FAKE_FINALIZER_STICKS || true
+  unset FAKE_LIST_FAIL FAKE_PATCH_FAIL FAKE_DELETE_FAIL FAKE_FINALIZER_STICKS FAKE_VERIFY_READ_FAIL || true
   return 0
 }
 
@@ -204,5 +205,55 @@ tenant-b kubevirt-kubernetes-fluxcd cozystack-kubernetes-application-kubevirt-ku
   # ...and it deleted nothing and stamped nothing.
   ! grep -qE -- "^DELETE " "$FAKE_CMDLOG"
   ! grep -qF -- "STAMP 55" "$FAKE_CMDLOG"
+  rm -rf "$WORK"
+}
+
+# The verify READ that gates the delete errors out (RBAC, conflict, a transient
+# apiserver hiccup). Round 2 of this migration replaced `2>/dev/null || true` on
+# that read with `--ignore-not-found` precisely so a failed read aborts under
+# set -e instead of being swallowed to an empty string that reads as "finalizer
+# gone" — a failed read is NOT proof the object is safe to delete. The suspend
+# and finalizer patches before it succeed; the migration must still refuse to
+# delete and must not stamp. Without FAKE_VERIFY_READ_FAIL this path is the one
+# the fail-open bug hid in.
+@test "a failing finalizer verify read aborts before delete and before stamping" {
+  prep
+  export FAKE_HRS="tenant-a kubevirt-kubernetes-fluxcd cozystack-kubernetes-application-kubevirt-kubernetes-fluxcd
+tenant-b kubevirt-kubernetes-fluxcd cozystack-kubernetes-application-kubevirt-kubernetes-fluxcd"
+  export FAKE_VERIFY_READ_FAIL="Error from server (Forbidden): helmreleases.helm.toolkit.fluxcd.io \"kubevirt-kubernetes-fluxcd\" is forbidden"
+  rc=0
+  run_migration 54 >"$WORK/out" 2>&1 || rc=$?
+  cat "$WORK/out"; cat "$FAKE_CMDLOG"
+
+  # Must propagate: a swallowed read error would pass the gate on an object whose
+  # finalizer state was never actually read, then delete and stamp past it.
+  [ "$rc" -ne 0 ]
+  # It got as far as suspend + finalizer-drop on the first release before the
+  # verify read failed...
+  grep -qE -- "^SUSPEND tenant-a kubevirt-kubernetes-fluxcd$" "$FAKE_CMDLOG"
+  grep -qE -- "^FINALIZER-PATCH tenant-a kubevirt-kubernetes-fluxcd$" "$FAKE_CMDLOG"
+  # ...and it deleted nothing and stamped nothing.
+  ! grep -qE -- "^DELETE " "$FAKE_CMDLOG"
+  ! grep -qF -- "STAMP 55" "$FAKE_CMDLOG"
+  rm -rf "$WORK"
+}
+
+# The fleet scan itself fails. Under `set -euo pipefail` the failing
+# `kubectl ... | jq` aborts the `hrs=$(...)` assignment instead of yielding an
+# empty list the loop would silently skip — the pipefail the header calls
+# load-bearing. Nothing is touched and, crucially, the version is not stamped
+# past a fleet that was never actually inspected.
+@test "a failing fleet scan aborts before stamping" {
+  prep
+  export FAKE_HRS="tenant-a kubevirt-kubernetes-fluxcd cozystack-kubernetes-application-kubevirt-kubernetes-fluxcd"
+  export FAKE_LIST_FAIL="Error from server (Timeout): the server was unable to return a response in the time allotted"
+  rc=0
+  run_migration 54 >"$WORK/out" 2>&1 || rc=$?
+  cat "$WORK/out"; cat "$FAKE_CMDLOG"
+  # Must propagate: the Job retries rather than advancing the version.
+  [ "$rc" -ne 0 ]
+  ! grep -q 'STAMP' "$FAKE_CMDLOG"
+  # The scan failed before the loop, so not even the first release was touched.
+  ! grep -qE -- "^SUSPEND " "$FAKE_CMDLOG"
   rm -rf "$WORK"
 }

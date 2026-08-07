@@ -5,6 +5,12 @@
 # assert on which HelmReleases were suspended, finalizer-patched and deleted, in
 # what order, and which were never touched.
 #
+# Migration 54 fully-qualifies the resource as
+# `helmreleases.helm.toolkit.fluxcd.io` on every call, so this fake matches (and
+# reads the object name after) that exact token. The verify read and the fleet
+# scan therefore share a prefix; they are told apart by the verify read's
+# `-o jsonpath=` selector, matched first below.
+#
 #   FAKE_CMDLOG          file to append a one-line record of each call to
 #   FAKE_HRS             newline list of "<ns> <name> <chartRef.name>" — one per
 #                        HelmRelease the -A fleet scan should report. jq in the
@@ -13,8 +19,12 @@
 #   FAKE_LIST_FAIL       non-empty => the -A fleet scan exits 1 with this stderr
 #   FAKE_PATCH_FAIL      non-empty => every `patch` exits 1 with this stderr
 #   FAKE_DELETE_FAIL     non-empty => every `delete` exits 1 with this stderr
-#   FAKE_FINALIZER_STICKS non-empty => the finalizer read returns a still-present
+#   FAKE_FINALIZER_STICKS non-empty => the verify read returns a still-present
 #                        finalizer, modelling a patch the apiserver did not honour
+#   FAKE_VERIFY_READ_FAIL non-empty => the finalizer verify read itself exits 1
+#                        with this stderr, modelling an API error on the read
+#                        that gates the delete — the suspend and finalizer
+#                        patches before it still succeed
 #
 # The failure knobs exist because the point of migration 54 is fail-closed: a
 # kubectl error, or a finalizer that survives the patch, must ABORT the migration
@@ -42,6 +52,23 @@ case "$args" in
     exit 0
     ;;
 
+  # Per-namespace finalizer verify read, gating the delete. Shares the fleet
+  # scan's resource token, so it is matched FIRST and distinguished by the
+  # `-o jsonpath=` selector; --ignore-not-found (the migration's own flag) is
+  # just another token here and needs no handling. Empty output => the finalizer
+  # is gone and the delete may proceed; a non-empty value => it survived the
+  # patch and the migration must refuse to delete.
+  *"get helmreleases.helm.toolkit.fluxcd.io"*"jsonpath"*)
+    if [ -n "${FAKE_VERIFY_READ_FAIL:-}" ]; then
+      printf '%s\n' "$FAKE_VERIFY_READ_FAIL" >&2
+      exit 1
+    fi
+    if [ -n "${FAKE_FINALIZER_STICKS:-}" ]; then
+      printf '%s' '["helm.toolkit.fluxcd.io/finalizer"]'
+    fi
+    exit 0
+    ;;
+
   # Fleet scan: every HelmRelease across all namespaces, as JSON. The migration
   # pipes this through jq to pick out the two fluxcd-addon chartRef names, so the
   # selection logic under test is jq's, not the fake's — the fake just emits what
@@ -65,24 +92,14 @@ case "$args" in
     exit 0
     ;;
 
-  # Per-namespace finalizer read, gating the delete. Empty output => the
-  # finalizer is gone and the delete may proceed; a non-empty value => it
-  # survived the patch and the migration must refuse to delete.
-  *"get helmrelease "*"jsonpath"*)
-    if [ -n "${FAKE_FINALIZER_STICKS:-}" ]; then
-      printf '%s' '["helm.toolkit.fluxcd.io/finalizer"]'
-    fi
-    exit 0
-    ;;
-
   # Suspend and finalizer-drop patches.
-  *"patch helmrelease"*)
+  *"patch helmreleases.helm.toolkit.fluxcd.io"*)
     if [ -n "${FAKE_PATCH_FAIL:-}" ]; then
       printf '%s\n' "$FAKE_PATCH_FAIL" >&2
       exit 1
     fi
     ns=$(arg_after -n "$@")
-    name=$(arg_after helmrelease "$@")
+    name=$(arg_after helmreleases.helm.toolkit.fluxcd.io "$@")
     case "$args" in
       *suspend*)    log "SUSPEND $ns $name" ;;
       *finalizers*) log "FINALIZER-PATCH $ns $name" ;;
@@ -91,13 +108,13 @@ case "$args" in
     ;;
 
   # The orphaning delete itself.
-  *"delete helmrelease"*)
+  *"delete helmreleases.helm.toolkit.fluxcd.io"*)
     if [ -n "${FAKE_DELETE_FAIL:-}" ]; then
       printf '%s\n' "$FAKE_DELETE_FAIL" >&2
       exit 1
     fi
     ns=$(arg_after -n "$@")
-    name=$(arg_after helmrelease "$@")
+    name=$(arg_after helmreleases.helm.toolkit.fluxcd.io "$@")
     log "DELETE $ns $name"
     exit 0
     ;;
