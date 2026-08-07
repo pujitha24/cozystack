@@ -712,6 +712,31 @@ cozy_guard_helmrelease() {
     echo "» ${_hr} is not Ready and has no release history - no completed helm action to judge, not inspected"
     return 0
   fi
+  # Two premises hold this branch up, and neither is visible from where it is
+  # written.
+  #
+  # The fatal verdict is gated on the release still carrying RetryOnFailure, so
+  # the field that makes a teardown inexplicable is also the field that switches
+  # the guard off. Take RetryOnFailure away from the tenant cilium or csi and an
+  # "uninstalled" Snapshot stops failing the run and starts printing the NOTE
+  # below - the guard falls silent in the one scenario it was written for, with
+  # nothing here changed and nothing in this file to notice. What actually holds
+  # that field is not this guard but two chart tests,
+  # packages/apps/kubernetes/tests/cilium_install_retry_test.yaml and
+  # csi_install_retry_test.yaml, which pin strategy.name on both actions. They
+  # are therefore load-bearing for this guard and not only for the chart: relax
+  # them and the teeth here go with them.
+  #
+  # And the rule implemented is narrower than the rule stated. "Configured never
+  # to remove itself to recover" is read here as strategy = RetryOnFailure, but a
+  # release on the default strategy with remediation.retries: 0 is equally unable
+  # to uninstall and retry, and its "uninstalled" Snapshot is equally
+  # unexplained - yet it lands in the soft branch. No addon is in that shape
+  # today, every one of them sets retries: -1. It matters because the addons are
+  # enumerated from the cluster precisely so a release added later is covered
+  # without editing this file, and a release added later in that shape would be
+  # covered softly and silently. Reading .spec.install.remediation.retries beside
+  # the strategy is what would close the gap.
   if helmrelease_has_teardown "${_history}"; then
     if [ "${_strategy}" = "RetryOnFailure" ]; then
       echo "HelmRelease ${_hr} was uninstalled and reinstalled, though its install strategy is RetryOnFailure, which does not uninstall to recover. The other configuration that uninstalls is an upgrade remediation with strategy: uninstall - check whether one was added before looking outside the release." >&2
