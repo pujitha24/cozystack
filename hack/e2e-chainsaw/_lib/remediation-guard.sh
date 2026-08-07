@@ -14,6 +14,20 @@
 # and so on. A remediation cycle leaves a footprint there, and the two
 # helpers below read it at two different strengths.
 #
+# "Bounded" is literal, and it bounds what a caller may conclude. The
+# controller truncates history on every in-sync reconcile: on a release
+# whose strategy is a retry it keeps the newest five Snapshots, and on any
+# other it keeps those down to the previous deployed or superseded one,
+# falling back to that same five when history holds no such Snapshot to
+# cut at. A footprint therefore outlives the reconcile that follows it,
+# not an arbitrary number of them. Only the truncation itself is checkable
+# from here: it lives in helm-controller/api, which this repository pins in
+# go.mod. Which of the two variants a release gets is decided in the
+# controller, and that module is not a dependency at all, so that half
+# rests on upstream source this tree does not carry. Reading history
+# immediately after the action that wrote it, which is what an e2e run
+# does, sees it; reading it after the release has moved on may not.
+#
 # helmrelease_has_teardown is the narrow one: it reports whether the
 # release was REMOVED, which an "uninstalled" Snapshot proves. Two
 # configurations can write that status: the default RemediateOnFailure
