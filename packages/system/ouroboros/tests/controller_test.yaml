@@ -29,6 +29,13 @@ tests:
   - it: leaves Gateway-API watching off at the parent default (consumer enables)
     template: charts/ouroboros/templates/controller-deployment.yaml
     asserts:
+      # Anchor the index before asserting on it. notContains passes whenever its
+      # path resolves to something that lacks the content, and a different
+      # container at [0] qualifies, so without this the guard goes green if a
+      # sidecar is ever placed ahead of the controller.
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: controller
       - notContains:
           path: spec.template.spec.containers[0].args
           content: --gateway-api

@@ -41,9 +41,6 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --shard-memory-limit=1Gi
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --shard-cpu-limit=
       - contains:
           path: spec.template.spec.containers[0].args
           content: --zap-log-level=info
@@ -72,9 +69,29 @@ tests:
   - it: does not render --pinned-tenants by default
     template: templates/workload.yaml
     asserts:
-      - notContains:
+      # The whole arg list, not a notContains on a prefix. contains/notContains
+      # compare list elements for equality, so `--pinned-tenants=` never equals
+      # a rendered `--pinned-tenants=tenant-a=shard0` and the negative form of
+      # that assertion cannot fail. Pinning the list states what the default
+      # render is and fails on anything added to it, this flag included, and it
+      # anchors the index at the same time.
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: flux-shard-operator
+      - equal:
           path: spec.template.spec.containers[0].args
-          content: --pinned-tenants=
+          value:
+            - --leader-elect
+            - --metrics-bind-address=:8080
+            - --metrics-secure=false
+            - --flux-namespace=cozy-fluxcd
+            - --shard-count=auto
+            - --shard-concurrent=5
+            - --rebalance-threshold=0.25
+            - --shard-cpu-request=100m
+            - --shard-memory-request=64Mi
+            - --shard-memory-limit=1Gi
+            - --zap-log-level=info
 
   - it: renders shardCount and pinned tenants from values
     template: templates/workload.yaml

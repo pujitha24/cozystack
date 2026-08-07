@@ -27,9 +27,27 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --target-service-namespace=cozy-ingress-nginx
-      - notContains:
+      # The whole argument list, not a notContains on the prefix. contains and
+      # notContains compare list elements for equality, so `--target-host=`
+      # never equals a rendered `--target-host=<value>` and that negative could
+      # not fail. A length assertion would not do either: an upstream bump that
+      # adds the flag while consolidating another argument keeps the count.
+      # Pinning the list states what the proxy is invoked with, and fails on
+      # anything added, removed or swapped.
+      - equal:
           path: spec.template.spec.containers[0].args
-          content: --target-host=
+          value:
+            - proxy
+            - --listen-http=:8080
+            - --listen-https=:8443
+            - --listen-health=:8081
+            - --target-service-name=ingress-nginx-controller
+            - --target-service-namespace=cozy-ingress-nginx
+            - --target-http-port=80
+            - --target-https-port=443
+            - --dial-timeout=5s
+            - --ready-timeout=2s
+            - --shutdown-grace=30s
 
   - it: controller image is pinned to the digest the values.yaml ships
     template: charts/ouroboros/templates/controller-deployment.yaml
