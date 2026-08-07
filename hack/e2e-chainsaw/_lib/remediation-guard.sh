@@ -63,7 +63,11 @@
 # explanation inside the release. Keeping that out of here leaves each helper
 # answering one question about one list of statuses.
 
+# Both helpers scope "statuses", so sourcing this library and calling one
+# cannot overwrite a variable of that name in the caller. Seven suites source
+# it, and the e2e guard keeps release history in variables of its own.
 helmrelease_has_teardown() {
+    local statuses
     statuses="$1"
     if [ -z "${statuses}" ]; then
         return 1
@@ -75,6 +79,7 @@ helmrelease_has_teardown() {
 }
 
 helmrelease_has_remediation_cycle() {
+    local statuses
     statuses="$1"
     if [ -z "${statuses}" ]; then
         return 1
