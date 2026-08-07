@@ -1465,8 +1465,11 @@ EOF
   # leaves a "failed" or "uninstalled" entry behind that survives a later
   # successful reinstall, unlike the installFailures/upgradeFailures
   # counters (which ClearFailures zeroes on every successful reconcile).
-  # The shape is pinned by hack/remediation-guard.bats; the upstream
-  # types are github.com/fluxcd/helm-controller/api v2 Snapshot.
+  # The expression below is pinned by internal/fluxcontract, which reads it
+  # out of this file and runs it over a HelmRelease built from the upstream
+  # types (github.com/fluxcd/helm-controller/api v2, at the version go.mod
+  # holds). Renaming a field upstream fails that test rather than turning this
+  # read into a silent empty string.
   history_statuses=$(kubectl get hr -n tenant-test "kubernetes-${test_name}" \
     -ojsonpath='{range .status.history[*]}{.status}{"\n"}{end}')
   # Always emit the raw value so a silent future-Flux field rename shows
