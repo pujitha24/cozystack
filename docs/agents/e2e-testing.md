@@ -58,11 +58,15 @@ The install test fails if **any** HelmRelease is not Ready. A toothless gate (ba
 - Use a single `kubectl wait hr --all -A`, then an outcome-based re-list (covers HRs created after the snapshot), and `exit 1` on any non-Ready HR.
 - Dump the full Ready-condition message per non-Ready HR so the real error is in the test output. See `hack/e2e-install-cozystack.bats`.
 
-### 6. Assert the parent HelmRelease did not remediate — via `status.history`
+### 6. Assert no HelmRelease was torn down against its own configuration — via `status.history`
 
-A parent HelmRelease that hit its wait timeout, uninstalled, and reinstalled is a silent race we want to catch. **Do not** check `.status.installFailures` / `.status.upgradeFailures`: Flux's `ClearFailures()` zeroes those on every successful reconcile, so checking them after the HR is Ready is **vacuous** and passes against a reverted fix.
+A HelmRelease that hit its wait timeout, uninstalled, and reinstalled is a silent race we want to catch — and on the releases that no longer recover that way, it is a race with no explanation inside the release at all. **Do not** check `.status.installFailures` / `.status.upgradeFailures`: Flux's `ClearFailures()` zeroes those on every successful reconcile, so checking them after the HR is Ready is **vacuous** and passes against a reverted fix.
 
-- Inspect `.status.history` instead — a `failed` or `uninstalled` Snapshot survives a later successful reconcile. Use the shared helper in `hack/e2e-chainsaw/_lib/remediation-guard.sh` (`helmrelease_has_remediation_cycle`) from a `script` step.
+- Inspect `.status.history` instead — a `failed` or `uninstalled` Snapshot survives a later successful reconcile. Use the shared helpers in `hack/e2e-chainsaw/_lib/remediation-guard.sh` from a `script` step.
+- **Fail on a teardown the release is configured not to perform; report everything else.** `helmrelease_has_teardown` reports an `uninstalled` Snapshot, which is proof the release was removed and put back. Two configurations write it — the default strategy's install remediation, and an upgrade remediation set to `strategy: uninstall`, which nothing under `packages/` uses — so on a `RetryOnFailure` release with neither — the tenant `cilium` and `csi`, and every Application HelmRelease, which the aggregated apiserver stamps that way (`pkg/registry/apps/application/rest.go`) — an `uninstalled` Snapshot has no explanation inside the release and fails the run. On a release still using the default strategy the same Snapshot is that strategy doing its documented job, and it is printed instead.
+- **Report `failed` rather than failing on it.** `helmrelease_has_remediation_cycle` is the broader `failed`-or-`uninstalled` reading; it catches the upgrade remediation that rolls back rather than uninstalls, but it is not proof anything was removed, since a retried install under `RetryOnFailure` leaves `failed` behind with its manifests still applied.
+- **Do not put an unmeasured pass condition on the gate.** The tenant addons that set no strategy pair the default one with `remediation.retries: -1`, a configuration that declares repeated uninstall-and-reinstall their recovery path. Nothing in the suite measures how often they take it, and failing a 25-minute bringup on a release doing what it is configured to do is how a guard ends up switched off. That the configuration is itself a defect is a separate matter from what the guard asserts. Print the finding, name the release, leave the run green, and tighten when a measured baseline or a strategy change makes the condition knowable.
+- **Do not infer a child release's state from the parent's.** The Kubernetes `ApplicationDefinition` sets `release.cozystack.io/helm-install-disable-wait`, which the apiserver turns into `DisableWait` on both actions, so the parent reaches Ready without waiting for anything it applied — and the suite waits on some addons by name while never naming others. An empty `.status.history` is therefore judged against that release's own Ready condition: Ready with no history is a status shape the helper can no longer read and fails the run, not-Ready with no history is a release that never completed an action and is reported as not inspected.
 
 ### 7. Test-Impact Analysis (TIA), default-on
 
@@ -126,7 +130,7 @@ The suite is pinned to Chainsaw **v0.2.15** (the latest release as of May 2026);
 5. Controller-created artifacts the test cannot reclaim are pruned explicitly; nested tenants delete child → parent with a wait-for-deletion between.
 6. Standard HR-Ready assert timeout is **5–6m**; longer waits (harbor 10m, NFS 10m, VM image pulls, platform-wide install 15m) are justified in-line.
 7. Failure path attaches scoped diagnostics via a `catch:` block, never a silent pass.
-8. If it touches parent-HR behavior, add the `status.history` remediation guard (`hack/e2e-chainsaw/_lib/remediation-guard.sh`).
+8. If it touches HelmRelease install/upgrade behavior, add the `status.history` guard (`hack/e2e-chainsaw/_lib/remediation-guard.sh`): fail the run on a teardown of a `RetryOnFailure` release, report every other footprint without failing. On an Application-served HelmRelease the broad `failed` reading is the only footprint the release's own configuration can produce, and it is informational; an `uninstalled` Snapshot there comes from outside the release and fails the run.
 
 ## In-flight direction (not yet the merged standard)
 
