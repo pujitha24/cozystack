@@ -682,9 +682,6 @@ ${talos_block}
       valuesOverride: {}
     cilium:
       valuesOverride: {}
-    fluxcd:
-      enabled: false
-      valuesOverride: {}
     gatewayAPI:
       enabled: false
     gpuOperator:
