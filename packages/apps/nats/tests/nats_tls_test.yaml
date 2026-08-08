@@ -123,6 +123,29 @@ tests:
       - isNull:
           path: spec.values.nats.config.nats.tls
 
+  - it: disables TLS in HelmRelease when tls is explicitly null and external is false
+    set:
+      tls: null
+      external: false
+    documentSelector:
+      path: kind
+      value: HelmRelease
+    asserts:
+      - isNull:
+          path: spec.values.nats.config.nats.tls
+
+  - it: enables TLS in HelmRelease when tls is explicitly null and external is true
+    set:
+      tls: null
+      external: true
+    documentSelector:
+      path: kind
+      value: HelmRelease
+    asserts:
+      - equal:
+          path: spec.values.nats.config.nats.tls.enabled
+          value: true
+
   ###################################################
   # Explicit true overrides external=false          #
   ###################################################

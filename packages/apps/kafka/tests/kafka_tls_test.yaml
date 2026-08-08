@@ -97,6 +97,36 @@ tests:
           path: spec.kafka.listeners
           count: 2
 
+  # Case 6: external=true, tls explicitly null → treated as unset, inherits external (true)
+  - it: enables TLS on external listener when tls is explicitly null and external is true
+    release:
+      name: test-kafka
+      namespace: tenant-test
+    set:
+      external: true
+      tls: null
+    asserts:
+      - contains:
+          path: spec.kafka.listeners
+          content:
+            name: external
+            port: 9094
+            type: loadbalancer
+            tls: true
+
+  # Case 7: external=false, tls explicitly null → no external listener
+  - it: does not create external listener when tls is explicitly null and external is false
+    release:
+      name: test-kafka
+      namespace: tenant-test
+    set:
+      external: false
+      tls: null
+    asserts:
+      - lengthEqual:
+          path: spec.kafka.listeners
+          count: 2
+
   ########################################
   # kindIs "invalid" guard — Category J  #
   ########################################

@@ -5,9 +5,10 @@ When tls.enabled is explicitly set, its value is used.
 When tls.enabled is unset (null/invalid), falls back to .Values.external.
 */}}
 {{- define "qdrant.tls.enabled" -}}
-{{- if kindIs "invalid" .Values.tls.enabled -}}
+{{- $tls := .Values.tls | default dict -}}
+{{- if kindIs "invalid" $tls.enabled -}}
 {{- .Values.external | default false -}}
 {{- else -}}
-{{- .Values.tls.enabled -}}
+{{- $tls.enabled -}}
 {{- end -}}
 {{- end -}}

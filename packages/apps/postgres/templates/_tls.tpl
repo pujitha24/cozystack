@@ -9,9 +9,10 @@ Tri-state semantics:
   - tls.enabled unset (null)    → auto-on when external is true
 */}}
 {{- define "postgres.tls.enabled" -}}
-{{- if kindIs "invalid" .Values.tls.enabled -}}
+{{- $tls := .Values.tls | default dict -}}
+{{- if kindIs "invalid" $tls.enabled -}}
   {{- .Values.external | default false | toString -}}
 {{- else -}}
-  {{- .Values.tls.enabled | toString -}}
+  {{- $tls.enabled | toString -}}
 {{- end -}}
 {{- end -}}

@@ -3,6 +3,8 @@ suite: postgres TLS configuration
 # Covers the tri-state tls.enabled field for the operator-managed CNPG TLS mode.
 # tls.enabled is a plain boolean; null is NOT a valid input form (schema rejects it).
 # Omitting tls.enabled entirely triggers kindIs "invalid" → auto-on when external=true.
+# The whole tls key can also be explicitly null (e.g. an API layer that emits every
+# field including unset ones) — that is handled the same as tls.enabled being unset.
 #
 #   - external: false, tls.enabled omitted → TLS off (default)
 #   - external: true,  tls.enabled omitted → TLS auto-on
@@ -34,6 +36,30 @@ tests:
     asserts:
       - isNull:
           path: spec.certificates
+
+  - it: Cluster has no spec.certificates when tls is explicitly null and external false
+    set:
+      tls: null
+    documentSelector:
+      path: kind
+      value: Cluster
+    asserts:
+      - isNull:
+          path: spec.certificates
+
+  - it: Cluster has spec.certificates.serverAltDNSNames when tls is explicitly null and external true
+    set:
+      external: true
+      _namespace:
+        host: example.cozy.local
+      tls: null
+    documentSelector:
+      path: kind
+      value: Cluster
+    asserts:
+      - contains:
+          path: spec.certificates.serverAltDNSNames
+          content: pg-test.example.cozy.local
 
   - it: Cluster has no spec.certificates when tls explicitly disabled with external true
     set:

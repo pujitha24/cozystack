@@ -12,9 +12,10 @@
   is rendered at all is controlled by .Values.external in the caller.
 */ -}}
 {{- define "kafka.tls.enabled" -}}
-{{- if kindIs "invalid" .Values.tls.enabled -}}
+{{- $tls := .Values.tls | default dict -}}
+{{- if kindIs "invalid" $tls.enabled -}}
   {{- .Values.external | default false -}}
 {{- else -}}
-  {{- .Values.tls.enabled -}}
+  {{- $tls.enabled -}}
 {{- end -}}
 {{- end -}}

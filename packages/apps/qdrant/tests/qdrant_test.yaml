@@ -201,6 +201,28 @@ tests:
             secret:
               secretName: test-qdrant-tls
 
+  # (b2) external: true, tls explicitly null -> treated as unset -> TLS ON
+  - it: "(b2) TLS is ON when external is true and tls is explicitly null"
+    release:
+      name: test-qdrant
+      namespace: tenant-test
+    set:
+      external: true
+      tls: null
+    asserts:
+      - equal:
+          path: spec.values.qdrant.config.service.enable_tls
+          value: true
+      - equal:
+          path: spec.values.qdrant.config.cluster.p2p.enable_tls
+          value: true
+      - contains:
+          path: spec.values.qdrant.additionalVolumes
+          content:
+            name: tls
+            secret:
+              secretName: test-qdrant-tls
+
   # (c) external: true, tls.enabled: false -> TLS OFF (explicit off wins)
   - it: "(c) TLS is OFF when external is true but tls.enabled is explicitly false"
     release:
