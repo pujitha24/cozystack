@@ -187,6 +187,13 @@ tests:
       nodeGroups.md0.storageClass: ""
       storageClass: ""
     asserts:
+      # Anchor the document before asserting about it. notExists passes on any
+      # document that lacks the path, so a document inserted ahead of index 4
+      # would leave this green while the KubevirtMachineTemplate it names moved
+      # to a different index.
+      - isKind:
+          of: KubevirtMachineTemplate
+        documentIndex: 4
       - notExists:
           path: spec.template.spec.virtualMachineTemplate.spec.dataVolumeTemplates[0].spec.storage.storageClassName
         documentIndex: 4
