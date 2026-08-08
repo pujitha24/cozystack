@@ -79,7 +79,7 @@ spec:
               - ALL
             readOnlyRootFilesystem: true
         - name: csi-provisioner
-          image: quay.io/openshift/origin-csi-external-provisioner:latest
+          image: quay.io/openshift/origin-csi-external-provisioner:5.0.0
           resources:
             limits:
               cpu: 512m
@@ -109,7 +109,7 @@ spec:
               mountPath: /etc/kubernetes/kubeconfig
               readOnly: true
         - name: csi-attacher
-          image: quay.io/openshift/origin-csi-external-attacher:latest
+          image: quay.io/openshift/origin-csi-external-attacher:5.0.0
           args:
             - "--csi-address=$(ADDRESS)"
             - "--kubeconfig=/etc/kubernetes/kubeconfig/super-admin.svc"
@@ -138,7 +138,7 @@ spec:
               - ALL
             readOnlyRootFilesystem: true
         - name: csi-liveness-probe
-          image: quay.io/openshift/origin-csi-livenessprobe:latest
+          image: quay.io/openshift/origin-csi-livenessprobe:5.0.0
           args:
             - "--csi-address=/csi/csi.sock"
             - "--probe-timeout=3s"

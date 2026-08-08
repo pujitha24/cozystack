@@ -1,0 +1,29 @@
+suite: csi/deploy.yaml sidecar image tags
+
+templates:
+  - templates/csi/deploy.yaml
+
+values:
+  - values/common.yaml
+
+release:
+  name: kubernetes-test
+  namespace: tenant-test
+
+tests:
+  # A `latest` tag both floats (so what a rollout actually runs is
+  # unreproducible) and defaults imagePullPolicy to Always, so every install
+  # forces a full re-pull instead of reusing a node's local cache. Pinning to
+  # the version `latest` resolves to today keeps the same image and lets
+  # IfNotPresent apply.
+  - it: pins every sidecar image to a fixed tag instead of latest
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.containers[1].image
+          pattern: ':latest$'
+      - notMatchRegex:
+          path: spec.template.spec.containers[2].image
+          pattern: ':latest$'
+      - notMatchRegex:
+          path: spec.template.spec.containers[3].image
+          pattern: ':latest$'
