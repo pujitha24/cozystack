@@ -268,11 +268,7 @@ func (o *CozyServerOptions) Complete() error {
 		delay = min(time.Duration(float64(delay)*1.5), maxDelay)
 	}
 
-	resourceConfig, err := resourceConfigFrom(crdList.Items, hrFlags)
-	if err != nil {
-		return err
-	}
-	o.ResourceConfig = resourceConfig
+	o.ResourceConfig = resourceConfigFrom(crdList.Items, hrFlags)
 
 	return nil
 }
@@ -280,8 +276,11 @@ func (o *CozyServerOptions) Complete() error {
 // resourceConfigFrom converts the ApplicationDefinitions to the resource config
 // cozystack-api serves. A kind declared by more than one definition is
 // registered once, for the definition that owns it, rather than as two
-// resources for one GVK; the definitions left out are logged.
-func resourceConfigFrom(defs []v1alpha1.ApplicationDefinition, hrFlags helmReleaseFlagValues) (*config.ResourceConfig, error) {
+// resources for one GVK; the definitions left out are logged. A definition that
+// buildResourceFromCRD rejects is left out and logged the same way, so one
+// malformed definition costs its own kind instead of keeping cozystack-api,
+// and with it every tenant's API, from starting.
+func resourceConfigFrom(defs []v1alpha1.ApplicationDefinition, hrFlags helmReleaseFlagValues) *config.ResourceConfig {
 	owned, skipped := ownedDefinitions(defs)
 	for _, msg := range skipped {
 		fmt.Printf("Skipping %s\n", msg)
@@ -290,11 +289,12 @@ func resourceConfigFrom(defs []v1alpha1.ApplicationDefinition, hrFlags helmRelea
 	for _, crd := range owned {
 		resource, err := buildResourceFromCRD(crd, hrFlags)
 		if err != nil {
-			return nil, err
+			fmt.Printf("Skipping %v\n", err)
+			continue
 		}
 		resourceConfig.Resources = append(resourceConfig.Resources, resource)
 	}
-	return resourceConfig, nil
+	return resourceConfig
 }
 
 // ownedDefinitions returns the definitions that own their application kind
